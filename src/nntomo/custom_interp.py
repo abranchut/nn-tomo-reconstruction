@@ -2,7 +2,7 @@ import math
 
 import cupy as cp
 
-BLOCK_SIZE = (8,8,8)
+from nntomo import GPU_BLOCK_SIZE
 
 
 def custom_interp_dataset_init(UU: cp.ndarray, Z: cp.ndarray, T: cp.ndarray, proj_data: cp.ndarray, Nz: int) -> cp.ndarray:
@@ -66,9 +66,9 @@ def custom_interp_dataset_init(UU: cp.ndarray, Z: cp.ndarray, T: cp.ndarray, pro
         }
         ''', 'interp_kernel')
     
-    grid_size = (math.ceil(n/BLOCK_SIZE[0]), math.ceil(Nth/BLOCK_SIZE[1]), math.ceil(input_size/BLOCK_SIZE[2]))
+    grid_size = (math.ceil(n/GPU_BLOCK_SIZE[0]), math.ceil(Nth/GPU_BLOCK_SIZE[1]), math.ceil(input_size/GPU_BLOCK_SIZE[2]))
     
-    kern(grid_size, BLOCK_SIZE, (UU, Z, idx, T, proj_data, n, Nz, Nth, input_size, Nd, output))
+    kern(grid_size, GPU_BLOCK_SIZE, (UU, Z, idx, T, proj_data, n, Nz, Nth, input_size, Nd, output))
     return output
 
 
@@ -130,7 +130,7 @@ def custom_interp_reconstruction(UU, Z, T, convol):
         }
         ''', 'interp_kernel')
     
-    grid_size = (math.ceil(Nx/BLOCK_SIZE[0]), math.ceil(Ny/BLOCK_SIZE[1]), math.ceil(Nz/BLOCK_SIZE[2]))
+    grid_size = (math.ceil(Nx/GPU_BLOCK_SIZE[0]), math.ceil(Ny/GPU_BLOCK_SIZE[1]), math.ceil(Nz/GPU_BLOCK_SIZE[2]))
 
-    kern(grid_size, BLOCK_SIZE, (UU, Z, idx, T, convol, Nd, Nx, Ny, Nz, output))
+    kern(grid_size, GPU_BLOCK_SIZE, (UU, Z, idx, T, convol, Nd, Nx, Ny, Nz, output))
     return output

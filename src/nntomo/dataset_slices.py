@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 from nntomo.custom_interp import custom_interp_dataset_init
 from nntomo.projection_stack import ProjectionStack
 from nntomo.volume import Volume
+from nntomo import DATA_FOLDER, GPU_MEM_LIMIT
 
 
 class DatasetSlices(Dataset):
@@ -22,8 +23,6 @@ class DatasetSlices(Dataset):
             proj_stacks (Union[ProjectionStack, list[ProjectionStack]]): The stack(s) of projections used to calculate he inputs.
             volumes (Union[Volume, list[Volume]]): The volume(s) representing the real voxel values (expected outputs) associated with proj_stacks.
             binning (bool, optional): Whether or not exponential binning is applied to the inputs. See [Pelt 2013] for precisions. Defaults to True.
-            batch_voxel (int, optional): The number of voxels for which the NN inputs are calculated in parallel using the GPU. Needs to be reduced
-                in case of memory issues. Defaults to 1_000.
             n_input (int, optional): The number of random voxels in the volume(s) for which the NN inputs are calculated, and as such, the number of
                 inputs and outputs in the dataset. Defaults to 100_000.
             axes_convention (str, optional): Convention for the orientation of axes for the projections stacks, either 'astra' or 'imod'. Defaults to
@@ -35,8 +34,7 @@ class DatasetSlices(Dataset):
     """
 
     def __init__(self, proj_stacks: Union[ProjectionStack, list[ProjectionStack]], volumes: Union[Volume, list[Volume]], binning: bool = True,
-                 batch_voxel: int = 1_000, n_input: int = 100_000, axes_convention: str = 'astra', custom_id: str = None,
-                 empty_cached_memory: bool = True) -> None:
+                 n_input: int = 100_000, axes_convention: str = 'astra', custom_id: str = None, empty_cached_memory: bool = True) -> None:
 
         ### Checking that proj_stacks and volumes are compatible ###
         if axes_convention not in ['astra', 'imod']:
@@ -62,7 +60,7 @@ class DatasetSlices(Dataset):
             self.id = f"{proj_stacks[0].id}_{volumes[0].id}{binning*'_bin'}"
         else:
             self.id = custom_id
-        self.file_path = f"data/datasets_files/{self.id}.pickle"
+        self.file_path = DATA_FOLDER / f"datasets_files/{self.id}.pickle"
 
 
 
@@ -81,7 +79,7 @@ class DatasetSlices(Dataset):
         ### Attributes of the dataset ###
         self.binning = binning
         self.Nx, self.Ny, Nz_training = volume.shape
-        _, self.Nth, self.Nd = proj_stack.shape
+        self.Nth, _, self.Nd = proj_stack.shape
         self.raw_input_size = 2*self.Nd-1 # size of inputs before binning
         self.tilt_angles = np.linspace(-np.pi/2, np.pi/2, self.Nth, endpoint=False, dtype = np.float32)
 
@@ -114,7 +112,12 @@ class DatasetSlices(Dataset):
         ### Reshapes for numpy/cupy computations ###
         tilt_angles_ax2 = cp.asarray(self.tilt_angles.reshape(1, self.Nth, 1))
         big_T_ax3 = big_T.reshape(1, 1, self.raw_input_size)
-        
+
+
+
+        ### Batch voxel computation. This is the number of voxels for which the NN inputs are calculated in parallel using the GPU. The computation ###
+        ### is done so that the GPU memory use doesn't pass a certain limit. ###
+        batch_voxel = int(GPU_MEM_LIMIT*2**30/4/self.Nth/self.raw_input_size)
 
 
         ### For each voxel, the raw input is computed (equation (18) in [Pelt 2013]). For efficiency, the computation is done with batch_voxels voxels ###
@@ -165,7 +168,7 @@ class DatasetSlices(Dataset):
         print("Saving dataset...\r")
         with open(self.file_path, 'wb') as f:
             pickle.dump(self, f)
-        print(f"File saved at {self.file_path}. ID: {self.id}")
+        print(f"File saved at {self.file_path}.\n ID: {self.id}")
     
     @classmethod
     def retrieve(clas, id: str) -> 'DatasetSlices':
@@ -177,7 +180,7 @@ class DatasetSlices(Dataset):
         Returns:
             DatasetSlices: The retrieved dataset.
         """
-        file_path = "data/datasets_files/" + id + ".pickle"
+        file_path = DATA_FOLDER / f"datasets_files/{id}.pickle"
         with open(file_path, 'rb') as f:
             dataset = pickle.load(f)
         return dataset

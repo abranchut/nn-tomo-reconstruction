@@ -3,6 +3,7 @@ import cupy as cp
 import mrcfile
 
 from nntomo.utilities import progressbar
+from nntomo import DATA_FOLDER
 
 
 class Volume:
@@ -16,7 +17,7 @@ class Volume:
     def __init__(self, volume: np.ndarray, id: str) -> None:
 
         self.id = id
-        self.file_path = "data/volume_files/" + id + ".mrc"
+        self.file_path = DATA_FOLDER / f"volume_files/{id}.mrc"
 
         self.volume = volume.astype(np.float32)
         self.shape = volume.shape
@@ -161,7 +162,7 @@ class Volume:
         print("Saving volume...\r")
         with mrcfile.new(self.file_path, overwrite=True) as mrc:
             mrc.set_data(self.volume)
-        print(f"File saved at {self.file_path}. ID: {self.id}")
+        print(f"File saved at {self.file_path}.\n ID: {self.id}")
     
     @classmethod
     def retrieve(cls, id: str) -> 'Volume':
@@ -173,7 +174,7 @@ class Volume:
         Returns:
             Volume: The retrieved volume.
         """
-        file_path = "data/volume_files/" + id + ".mrc"
+        file_path = DATA_FOLDER / f"volume_files/{id}.mrc"
         with mrcfile.open(file_path) as mrc:
             volume = mrc.data
         return cls(volume, id)

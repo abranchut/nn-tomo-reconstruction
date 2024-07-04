@@ -8,12 +8,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from nntomo.dataset_slices import DatasetSlices
+from nntomo import DATA_FOLDER
 
 
 class NNFBP(nn.Module):
-    """General neural network from Pelt and al. (2013), for 2D images. For each pixel, the input is a 1D vector z (see article for its definition),
-    and the output is the reconstructed pixel. The input vector might have undergone exponential binning beforehand. Can be used for 3D objects too,
-    either by considering each slice independently for the input, or by applying a 3D shift and a 2D exponential binning. 
+    """General neural network structure from Pelt and al. (2013), for 2D images. For each pixel, the input is a 1D vector z (see article for its
+    definition), and the output is the reconstructed pixel. The input vector might have undergone exponential binning beforehand. Can be used for
+    3D objects too, either by considering each slice independently for the input, or by applying a 3D shift and a 2D exponential binning. 
 
     Args:
         train_dataset (DatasetSlices): The dataset used for training.
@@ -22,7 +23,6 @@ class NNFBP(nn.Module):
     """
 
     def __init__(self, train_dataset: DatasetSlices, Nh: int, id: str) -> None:
-        """Initialisation of the neural network."""
         super().__init__()
 
         self.Nh = Nh
@@ -128,7 +128,7 @@ def model_training(train_dataset: DatasetSlices, valid_dataset: DatasetSlices, N
         network_id = f"{train_dataset.id}_{Nh}h"
     else:
         network_id = custom_id
-    file_path = "data/nn_models/" + network_id + ".tar"
+    file_path = DATA_FOLDER / f"nn_models/{network_id}.tar"
 
     model = NNFBP(train_dataset, Nh, network_id)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate) # Faster than SGD
@@ -139,7 +139,7 @@ def model_training(train_dataset: DatasetSlices, valid_dataset: DatasetSlices, N
             'epoch': 1,
             'n': 0,
             'min_loss': None,
-            'model_states_history': [model.state_dict()],
+            'model_states_history': [deepcopy(model.state_dict())],
             'optim_state': optimizer.state_dict(), #TODO to test!!!!
             'best_model': None}
         print("Start of training.")
@@ -154,7 +154,7 @@ def model_training(train_dataset: DatasetSlices, valid_dataset: DatasetSlices, N
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=True)
 
-    model.load_state_dict(checkpoint['model_states_history'][-1])
+    model.load_state_dict(deepcopy(checkpoint['model_states_history'][-1]))
     optimizer.load_state_dict(checkpoint['optim_state'])
     loss_fn = nn.MSELoss()
 
@@ -191,7 +191,7 @@ def model_training(train_dataset: DatasetSlices, valid_dataset: DatasetSlices, N
 
 
 def edit_model(network_id, dict):
-    file_path = "data/nn_models/" + network_id + ".tar"
+    file_path = DATA_FOLDER / f"nn_models/{network_id}.tar"
     if not os.path.isfile(file_path):
         raise ValueError(f"This model ({network_id}) doesn't exists.")
     else:
@@ -201,7 +201,7 @@ def edit_model(network_id, dict):
         torch.save(checkpoint, file_path)
 
 def get_model_infos(network_id):
-    file_path = "data/nn_models/" + network_id + ".tar"
+    file_path = DATA_FOLDER / f"nn_models/{network_id}.tar"
     if not os.path.isfile(file_path):
         raise ValueError(f"This model ({network_id}) doesn't exists.")
     else:

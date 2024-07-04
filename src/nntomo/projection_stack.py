@@ -16,6 +16,7 @@ from tifffile import imread, imwrite
 from nntomo.custom_interp import custom_interp_reconstruction
 from nntomo.utilities import progressbar
 from nntomo.volume import Volume
+from nntomo import DATA_FOLDER
 
 
 class ProjectionStack:
@@ -38,7 +39,7 @@ class ProjectionStack:
         stack = stack.astype(np.float32)
 
         self.id = id
-        self.file_path = "data/projection_files/" + id + ".mrc"
+        self.file_path = DATA_FOLDER / f"projection_files/{id}.mrc"
         
         if axes_convention == 'imod':
             self.stack = np.transpose(stack, (2,0,1))
@@ -109,7 +110,7 @@ class ProjectionStack:
         _, proj_stack = astra.create_sino3d_gpu(np.flip(np.rot90(volume.volume, axes=(0,2)), axis=0), proj_geom, vol_geom)
 
         if custom_id is None:
-            id = f"{volume.id}_{angles_range}{Nth}th"
+            id = f"{volume.id}-{angles_range}{Nth}th"
         else:
             id = custom_id
 
@@ -170,8 +171,8 @@ class ProjectionStack:
         tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'deg')
         for angle in tilt_angles:
 
-            filename = f'data/tif_files/{tif_id}[{angle:.1f}].tif'
-            sym_filename = f'data/tif_files/{tif_id}[{-angle:.1f}].tif'
+            filename = DATA_FOLDER / f'tif_files/{tif_id}[{angle:.1f}].tif'
+            sym_filename = DATA_FOLDER / f'tif_files/{tif_id}[{-angle:.1f}].tif'
 
             if os.path.isfile(filename):
                 print(f"tif file retrieved for projection angle {angle}°")
@@ -226,9 +227,7 @@ class ProjectionStack:
 
         stack = np.stack(projs)/255
         return cls(stack, angles_range, id, axes_convention='imod')
-    
-
-        
+     
     @classmethod
     def from_mrc_file(cls, projection_file: str, angles_range: str = 'tem', custom_id: str = None) -> 'ProjectionStack':
         """Creation of a projection stack object, from a .ali or .mrc file.
@@ -255,6 +254,7 @@ class ProjectionStack:
         return cls(stack, angles_range, id, axes_convention='imod')
 
 
+
     def get_clipped_projection_stack(self, clip_range: tuple[float, float]) -> 'ProjectionStack':
         """Computes a projection stack in which the intensity is clipped between two values. For instance, if clip_range is set to (.7,210), all
         voxels values under .7 will be set to .7 and all values over 210 will be set to 210.
@@ -269,7 +269,7 @@ class ProjectionStack:
         min, max = clip_range
 
         clipped_stack = np.clip(self.stack, min, max)
-        new_id = f"{self.id}_clip{min}-{max}"
+        new_id = f"{self.id}-clip[{min}-{max}]"
 
         return ProjectionStack(clipped_stack, self.angles_range, new_id)
 
@@ -296,7 +296,7 @@ class ProjectionStack:
                 raise ValueError("When angles_range == 'tem',(nb_proj_subset - 1) should be a divisor of the number of projections in proj_stack - 1, \
                                 since both projections at angles -70° and 70° are kept.")
             
-        new_id = f"{self.id}_sub{nb_proj_subset}"
+        new_id = f"{self.id}-sub{nb_proj_subset}"
             
         return ProjectionStack(new_stack, self.angles_range, new_id)
     
@@ -310,9 +310,8 @@ class ProjectionStack:
             raise ValueError("The conversion cannot be made: the original stack doesn't contain projections at -70° and 70°.")
         new_Nth = self.Nth*7//9 + 1
         new_stack = self.stack[:, (self.Nth-new_Nth)//2 + 1 : - ((self.Nth-new_Nth)//2)]
-        new_id = f"{self.id}_subtem{new_Nth}"
+        new_id = f"{self.id}-subtem{new_Nth}"
         return ProjectionStack(new_stack, 'tem', new_id)
-
 
     def get_resized_proj(self, new_size: Union[int, tuple[int, int]]) -> 'ProjectionStack':
         """Optionnaly performs a centered crop of the projections so that the aspect ratio is the same as the one determined by new_size, then
@@ -329,7 +328,7 @@ class ProjectionStack:
 
         if type(new_size) is int:
             images = [PIL.Image.fromarray(proj).resize((new_size*b//a, new_size)) for proj in self._get_imod_stack()]
-            new_id = f"{self.id}_resized{new_size}"
+            new_id = f"{self.id}-resized{new_size}"
 
 
         else:
@@ -342,13 +341,14 @@ class ProjectionStack:
                 box_crop = (0, 0, a, b)
 
             images = [PIL.Image.fromarray(proj).crop(box_crop).resize(new_size) for proj in self._get_imod_stack()]
-            new_id = f"{self.id}_resized{new_size[0]}-{new_size[1]}"
+            new_id = f"{self.id}-resized[{new_size[0]}-{new_size[1]}]"
 
 
 
         new_stack = np.stack([np.array(image) for image in images])
 
         return ProjectionStack(new_stack, self.angles_range, new_id, 'imod')
+
 
 
     def get_SIRT_reconstruction(self, n_iter: int) -> 'Volume':
@@ -427,7 +427,7 @@ class ProjectionStack:
         return Volume(reconstruction, reconstruction_id)
 
     @torch.no_grad
-    def get_NN_reconstruction(self, nn_model, empty_cached_memory: bool = True) -> 'Volume':
+    def get_NN_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True) -> 'Volume':  # type: ignore # noqa: F821
         """Computes the neural network reconstruction, using the NN-FBP algorithm.
 
         Args:
@@ -446,17 +446,21 @@ class ProjectionStack:
 
         nn_model.eval()
 
+        ### Insure that voxels values are between 0 and 1 ###
+        proj_stack = cp.asarray(np.transpose(self.interp_stack, (1,0,2)))
+        proj_stack = (proj_stack - proj_stack.min())/(proj_stack.max() - proj_stack.min())
+
+        ### Voxels coordinates ###
         X = (cp.arange(self.Nd) - (self.Nd-1)/2).astype(cp.float32)
         Y = (cp.arange(self.Nd) - (self.Nd-1)/2).astype(cp.float32)
         Z = cp.arange(self.Nz, dtype=cp.int32)
-
-        proj_stack = cp.asarray(np.transpose(self.interp_stack, (1,0,2)))
-        proj_stack = (proj_stack - proj_stack.min())/(proj_stack.max() - proj_stack.min())
         XX, YY = cp.meshgrid(X, Y)
 
         Nh = nn_model.Nh
-        raw_input_size = 2*self.Nd-1
 
+        ### Algorithm part 1 ###
+
+        raw_input_size = 2*self.Nd-1
         fft_out_size = raw_input_size + self.Nd - 1
         T_convolve = cp.linspace(-(fft_out_size-1)/2, (fft_out_size-1)/2, fft_out_size, dtype = cp.float32)
 
@@ -478,15 +482,17 @@ class ProjectionStack:
             
             fbps[:,:,:,h] = (fbp_h + b[h]).get()
         
+
+        ### Algorithm part 2-3-4 ###
+
         reconstruction = np.zeros((self.Nd, self.Nd, self.Nz), dtype = np.float32)
-
+        
         nn_model.to('cuda:0')
-
         for h in progressbar(range(Nh), "Reconstruction part 2/2: "):
             input_nn = torch.from_numpy(fbps[:,:,h*self.Nz//Nh:(h+1)*self.Nz//Nh,:]).to('cuda:0')
             reconstruction[:,:,h*self.Nz//Nh:(h+1)*self.Nz//Nh] = nn_model.end_forward(input_nn).cpu().numpy()
-        
         nn_model.to('cpu')
+
 
         if empty_cached_memory:
             del(X, Y, Z, proj_stack, XX, YY, T_convolve, weights, weights_fft, b, fbp_h, proj_fft, prod_fft, convol, UU, input_nn)
@@ -497,6 +503,7 @@ class ProjectionStack:
 
         reconstruction_id = f"nn_{nn_model.id}_{self.id}"
         return Volume(reconstruction, reconstruction_id)
+
 
 
     def _get_astra_stack(self) -> np.ndarray:
@@ -541,7 +548,7 @@ class ProjectionStack:
         print("Saving projections...\r")
         with mrcfile.new(self.file_path, overwrite=True) as mrc:
             mrc.set_data(self._get_imod_stack())
-        print(f"File saved at {self.file_path}. ID: {self.id}")
+        print(f"File saved at {self.file_path}.\n ID: {self.id}")
     
     @classmethod
     def retrieve(clas, id: str, angles_range: str) -> 'ProjectionStack':
@@ -556,7 +563,7 @@ class ProjectionStack:
             ProjectionStack: The retrieved stack.
         """
 
-        file_path = "data/projection_files/" + id + ".mrc"
+        file_path = DATA_FOLDER / f"projection_files/{id}.mrc"
         with mrcfile.open(file_path) as mrc:
             stack = mrc.data
         return clas(stack, angles_range, id, 'imod')
