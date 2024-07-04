@@ -1,0 +1,11 @@
+numpy
+cupy
+torch
+mrcfile
+abtem
+astra
+numba
+ase
+tifffile
+notebook
+-e
