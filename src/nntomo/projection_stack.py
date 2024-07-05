@@ -97,7 +97,7 @@ class ProjectionStack:
                 identifiant is given.
 
         Returns:
-            ProjectionStack: the projection stack object.
+            ProjectionStack: The projection stack object.
         """
 
         Nx, Ny, Nz = volume.shape
@@ -117,30 +117,31 @@ class ProjectionStack:
         return cls(proj_stack, angles_range, id, axes_convention='astra')
 
     @classmethod
-    def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str = 'tem', cell_repetition: tuple[int, int, int] = (1,1,1), symetry: bool = False,
+    def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str, cell_repetition: tuple[int, int, int] = (1,1,1), symetry: bool = False,
                       nb_frozen_phonons: int = None, dose_per_area_noise: float = None, energy: float = 300e3, sampling: float = .04,
                       del_hydrogen: bool = False, custom_id: str = None)-> 'ProjectionStack':
         """Computes a projection stack object from an atomic structure in a provided .cif file. Projections are computed with the abTEM library,
-        to simulate a real TEM experiment.
+        to simulate a real STEM experiment.
 
         Args:
-            cif_file (str): _description_
-            Nth (int): _description_
-            angles_range (str, optional): _description_. Defaults to 'tem'.
-            cell_repetition (tuple[int, int, int], optional): _description_. Defaults to (1,1,1).
-            add_frozen_phonons (bool, optional): _description_. Defaults to False.
-            nb_frozen_phonons (int, optional): _description_. Defaults to 8.
-            add_poisson_noise (bool, optional): _description_. Defaults to False.
-            dose_per_area_noise (float, optional): _description_. Defaults to 1e4.
-            energy (float, optional): _description_. Defaults to 300e3.
-            grid_size (int, optional): _description_. Defaults to 1024.
-            Cs (float, optional): _description_. Defaults to -8e-6*1e10.
-            Cc (float, optional): _description_. Defaults to 1.0e-3*1e10.
-            energy_spread (float, optional): _description_. Defaults to 0.35.
-            custom_id (str, optional): _description_. Defaults to None.
+            cif_file (str): The atomic structure from which the projections are taken.
+            Nth (int): The number of projections to compute.
+            angles_range (str): The range of projection angles in proj_files stacks, either 'full' (-90° to 90° projections) or 'tem'
+                (-70° to 70° projections).
+            cell_repetition (tuple[int, int, int], optional): How much the cell from the .cif file should be repeted in each direction. Defaults to (1,1,1).
+            symetry (bool, optional): If True, projections for positive angles are considered symetrical from projections for negative angles and as such,
+                not computed. For saving computation time. Defaults to False.
+            nb_frozen_phonons (int, optional): The number of frozen phonons. If None, the frozen phonons model is not applied. Defaults to None.
+            dose_per_area_noise (float, optional): The dose_per_area for Poisson noise. If None, no noise is added. Defaults to None.
+            energy (float, optional): The energy of the electrons (in eV). Defaults to 300e3.
+            sampling (float, optional): The sampling of the potentials. If too big, the maximum deviation angle will be too small for the HAADF detector.
+                Defaults to .04.
+            del_hydrogen (bool, optional): Whether or not to suppress the hydrogen from the atomic structure for faster computations. Defaults to False.
+            custom_id (str, optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
+                identifiant is given.
 
         Returns:
-            ProjectionStack: _description_
+            ProjectionStack: The projection stack object.
         """
         abtem.config.set({"device": "gpu"})
         abtem.config.set({"dask.chunk-size-gpu": "2048 MB"})
