@@ -34,12 +34,13 @@ def custom_interp_dataset_init(UU: cp.ndarray, Z: cp.ndarray, T: cp.ndarray, pro
     Nd = cp.int32(Nd)
     input_size = cp.int32(input_size)
     Nz = cp.int32(Nz)
-    output = cp.zeros(UU.shape, dtype=cp.float32)
+    output = cp.zeros_like(UU, dtype=cp.float32)
     idx = cp.searchsorted(T, UU, side='right').astype(cp.int32)
 
     kern = cp.RawKernel(r'''
         extern "C" __global__
-        void interp_kernel(const float* UU, const int* Z, const int* idx, const float* T, const float* proj_data, const int n, const int Nz, const int Nth, const int input_size, const int Nd, float* out) {
+        void interp_kernel(const float* UU, const int* Z, const int* idx, const float* T, const float* proj_data, const int n, const int Nz, const int Nth,
+                           const int input_size, const int Nd, float* out) {
             // idx from search_sorted(right) in n dimemsions
             int i = blockIdx.x * blockDim.x + threadIdx.x; // index of the random pixel
             int j = blockIdx.y * blockDim.y + threadIdx.y; // theta
@@ -102,7 +103,8 @@ def custom_interp_reconstruction(UU, Z, T, convol):
 
     kern = cp.RawKernel(r'''
         extern "C" __global__
-        void interp_kernel(const float* UU, const int* Z, const int* idx, const float* T, const float* convol, const int Nd, const int Nx, const int Ny, const int Nz, float* out) {
+        void interp_kernel(const float* UU, const int* Z, const int* idx, const float* T, const float* convol, const int Nd, const int Nx, const int Ny,
+                           const int Nz, float* out) {
             // idx from search_sorted(right) in n dimemsions
             int i = blockIdx.x * blockDim.x + threadIdx.x;
             int j = blockIdx.y * blockDim.y + threadIdx.y;

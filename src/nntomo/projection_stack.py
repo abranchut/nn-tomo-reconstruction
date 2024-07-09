@@ -85,7 +85,7 @@ class ProjectionStack:
                 raise ValueError(f"tem reconstruction for {self.Nth} projections not yet implemented.")
 
     @classmethod
-    def from_volume(cls, volume: 'Volume', Nth: int, angles_range: str, custom_id: str = None) -> 'ProjectionStack':
+    def from_volume(cls, volume: Volume, Nth: int, angles_range: str, custom_id: str = None) -> 'ProjectionStack':
         """Creation of a projection stack, provided a volume object. The computation of the projections is done with ASTRA.
 
         Args:
@@ -100,14 +100,13 @@ class ProjectionStack:
             ProjectionStack: The projection stack object.
         """
 
-        Nx, Ny, Nz = volume.shape
+        Nz, Ny, Nx = volume.shape # ASTRA convention for volume shape. The projections are taken around the Z axis
         Nd = max(Nx, Ny)
 
         tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'rad')
         proj_geom = astra.create_proj_geom('parallel3d', 1.0, 1.0, Nz, Nd, tilt_angles)
         vol_geom = astra.create_vol_geom(Ny, Nx, Nz)
-        
-        _, proj_stack = astra.create_sino3d_gpu(np.flip(np.rot90(volume.volume, axes=(0,2)), axis=0), proj_geom, vol_geom)
+        _, proj_stack = astra.create_sino3d_gpu(volume.volume, proj_geom, vol_geom)
 
         if custom_id is None:
             id = f"{volume.id}-{angles_range}{Nth}th"
@@ -352,7 +351,7 @@ class ProjectionStack:
 
 
 
-    def get_SIRT_reconstruction(self, n_iter: int) -> 'Volume':
+    def get_SIRT_reconstruction(self, n_iter: int) -> Volume:
         """Computes the SIRT reconstruction, using ASTRA toolbox.
 
         Args:
@@ -364,12 +363,12 @@ class ProjectionStack:
 
         print("Start of SIRT reconstruction.")
 
-        vol_geom = astra.create_vol_geom(self.Nd, self.Nd, self.Nz)
         proj_geom = astra.create_proj_geom('parallel3d', 1.0, 1.0, self.Nz, self.Nd, self.tilt_angles)
-
         proj_id = astra.data3d.create('-sino', proj_geom, self.stack)
 
+        vol_geom = astra.create_vol_geom(self.Nd, self.Nd, self.Nz)
         recon_id = astra.data3d.create('-vol', vol_geom, data=0)  # Initialize with zeros
+
         cfg = astra.astra_dict('SIRT3D_CUDA')
         cfg['ReconstructionDataId'] = recon_id
         cfg['ProjectionDataId'] = proj_id
@@ -388,7 +387,7 @@ class ProjectionStack:
         reconstruction_id = f"sirt{n_iter}_{self.id}"
         return Volume(reconstruction, reconstruction_id)
     
-    def get_FBP_reconstruction(self) -> 'Volume':
+    def get_FBP_reconstruction(self) -> Volume:
         """Computes the FBP reconstruction, using ASTRA toolbox. The computation is done by doing 2D FBP for each layer of the volume to reconstruct.
         
         Returns:
@@ -406,7 +405,7 @@ class ProjectionStack:
         cfg['ReconstructionDataId'] = rec_id
         cfg['option'] = {'FilterType': 'Ram-Lak'}
 
-        reconstruction = np.zeros((self.Nd, self.Nd, self.Nz), dtype=np.float32)
+        reconstruction = np.zeros((self.Nz, self.Nd, self.Nd), dtype=np.float32)
 
         for layer_index in progressbar(range(self.Nz), "FBP reconstruction: "):
 
@@ -425,10 +424,10 @@ class ProjectionStack:
         astra.projector.delete(proj_id)
         
         reconstruction_id = f"fbp_{self.id}"
-        return Volume(reconstruction, reconstruction_id)
+        return Volume(np.flip(reconstruction, axis=1), reconstruction_id)
 
     @torch.no_grad
-    def get_NN_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True) -> 'Volume':  # type: ignore # noqa: F821
+    def get_NN_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True) -> Volume:  # type: ignore # noqa: F821
         """Computes the neural network reconstruction, using the NN-FBP algorithm.
 
         Args:

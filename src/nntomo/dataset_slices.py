@@ -48,9 +48,9 @@ class DatasetSlices(Dataset):
         proj_shapes = [(proj_stack.shape[1], proj_stack.shape[2]) for proj_stack in proj_stacks]
         if len(set(proj_shapes)) > 1:
             raise ValueError("projection stacks should have same shapes along axis 1 and 2.")
-        vol_shapes = [(volume.shape[0], volume.shape[1]) for volume in volumes]
+        vol_shapes = [(volume.shape[1], volume.shape[2]) for volume in volumes]
         if len(set(vol_shapes)) > 1:
-            raise ValueError("volumes should have same shapes along axis 0 and 1.")
+            raise ValueError("volumes should have same shapes along axis 1 and 2.")
         if len(set([stack.angles_range for stack in proj_stacks])) > 1:
             raise ValueError("projection stacks should have same angles_range.")
         
@@ -66,19 +66,19 @@ class DatasetSlices(Dataset):
 
         ### All projections and volumes are stacked along the z-axis for computation convenience. Voxels values are set between 0 and 1 ###
         proj_stack = np.concatenate([stack.interp_stack for stack in proj_stacks], axis=0).astype(np.float32)
-        volume = np.concatenate([vol.volume for vol in volumes], axis=2).astype(np.float32)
+        volume = np.concatenate([vol.volume for vol in volumes], axis=0).astype(np.float32)
         
-        proj_stack = np.transpose(proj_stack, (1,0,2))
+        proj_stack = np.transpose(proj_stack, (1,0,2)) # (Nz, Nth, Nd) -> (Nth, Nz, Nd)
         proj_stack = (proj_stack-proj_stack.min()) / (proj_stack.max()-proj_stack.min())
         proj_stack = cp.asarray(proj_stack, dtype = cp.float32)
-
+        
         volume = (volume-volume.min()) / (volume.max()-volume.min())
 
 
 
         ### Attributes of the dataset ###
         self.binning = binning
-        self.Nx, self.Ny, Nz_training = volume.shape
+        Nz_training, self.Ny, self.Nx = volume.shape # astra convention for volumes: (Nz, Ny, Nx)
         self.Nth, _, self.Nd = proj_stack.shape
         self.raw_input_size = 2*self.Nd-1 # size of inputs before binning
         self.tilt_angles = np.linspace(-np.pi/2, np.pi/2, self.Nth, endpoint=False, dtype = np.float32)
@@ -105,7 +105,7 @@ class DatasetSlices(Dataset):
 
         ### The randomly chosen voxels in the volume ###
         rng = np.random.default_rng()
-        random_voxels = cp.asarray(rng.integers([self.Nx, self.Ny, Nz_training], size = (n_input, 3)), dtype = cp.int32)
+        random_voxels = cp.asarray(rng.integers([Nz_training, self.Ny, self.Nx], size = (n_input, 3)), dtype = cp.int32)
 
 
 
@@ -117,7 +117,7 @@ class DatasetSlices(Dataset):
 
         ### Batch voxel computation. This is the number of voxels for which the NN inputs are calculated in parallel using the GPU. The computation ###
         ### is done so that the GPU memory use doesn't pass a certain limit. ###
-        batch_voxel = int(GPU_MEM_LIMIT*2**30/4/self.Nth/self.raw_input_size)
+        batch_voxel = int(GPU_MEM_LIMIT*2**30/4/self.Nth/self.raw_input_size/4)
 
 
         ### For each voxel, the raw input is computed (equation (18) in [Pelt 2013]). For efficiency, the computation is done with batch_voxels voxels ###
@@ -129,11 +129,11 @@ class DatasetSlices(Dataset):
             voxels = random_voxels[batch_index*batch_voxel : min(n_input, (1+batch_index)*batch_voxel)]
             n = len(voxels)
 
-            X = voxels[:, 0].reshape(n, 1, 1) - (self.Nx-1)/2
+            X = voxels[:, 2].reshape(n, 1, 1) - (self.Nx-1)/2
             Y = voxels[:, 1].reshape(n, 1, 1) - (self.Ny-1)/2
             UU = (X*cp.cos(tilt_angles_ax2) + Y*cp.sin(tilt_angles_ax2) - big_T_ax3).astype(cp.float32)
             
-            pre_input = custom_interp_dataset_init(UU, voxels[:, 2], T, proj_stack, Nz_training)
+            pre_input = custom_interp_dataset_init(UU, voxels[:, 0], T, proj_stack, Nz_training)
 
             raw_inputs.append(cp.sum(pre_input, axis = 1))
 
@@ -141,7 +141,7 @@ class DatasetSlices(Dataset):
                 outputs[voxel_index] = volume[i,j,k]
                 voxel_index += 1
         
-
+        
         ### Binning transformation of the inputs ###
         raw_inputs = cp.concatenate(raw_inputs)
         if binning:
