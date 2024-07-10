@@ -216,10 +216,7 @@ class ProjectionStack:
                 image_uint8 = image_normalized.astype(np.uint8)
 
                 # Save image as TIFF
-                if abs(angle) == -angle:
-                    imwrite(filename, np.flip(image_uint8, axis=0), photometric='minisblack')
-                else: 
-                    imwrite(filename, image_uint8, photometric='minisblack')
+                imwrite(filename, image_uint8, photometric='minisblack')
 
                 print(f'Saved {filename}')
 
