@@ -8,8 +8,9 @@ Submodules
    :maxdepth: 4
 
    nntomo.custom_interp
-   nntomo.dataset_slices
+   nntomo.msdnet
    nntomo.network
+   nntomo.nnfbp
    nntomo.projection_stack
    nntomo.utilities
    nntomo.volume
