@@ -4,8 +4,30 @@ from typing import Generator, Iterable
 
 import cupy as cp
 import torch
+import astra
 from numba import cuda
 from numba.cuda.cudadrv import enums
+
+def optimizer_to(optim: torch.optim.Optimizer, device: str) -> None:
+    """Code from https://discuss.pytorch.org/t/moving-optimizer-from-cpu-to-gpu/96068/2. Transfer an optimizer to a device.
+
+    Args:
+        optim (torch.optim.Optimizer): The optimizer to transfer.
+        device (str): The device where the optimizer should be transfered.
+    """
+
+    for param in optim.state.values():
+        # Not sure there are any global tensors in the state dict
+        if isinstance(param, torch.Tensor):
+            param.data = param.data.to(device)
+            if param._grad is not None:
+                param._grad.data = param._grad.data.to(device)
+        elif isinstance(param, dict):
+            for subparam in param.values():
+                if isinstance(subparam, torch.Tensor):
+                    subparam.data = subparam.data.to(device)
+                    if subparam._grad is not None:
+                        subparam._grad.data = subparam._grad.data.to(device)
 
 
 def progressbar(it: Iterable, prefix: str = "", size:int = 60) -> Generator:
@@ -71,3 +93,14 @@ def empty_cached_gpu_memory() -> None:
     gc.collect()
     cp.get_default_memory_pool().free_all_blocks()
     torch.cuda.empty_cache()
+    astra_clear_all()
+
+
+def astra_clear_all() -> None:
+    """Clear all astra objects."""
+    astra.algorithm.clear()
+    astra.data2d.clear()
+    astra.data3d.clear()
+    astra.functions.clear()
+    astra.matrix.clear()
+    astra.projector.clear()

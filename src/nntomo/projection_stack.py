@@ -14,7 +14,7 @@ import torch
 from tifffile import imread, imwrite
 
 from nntomo.custom_interp import custom_interp_reconstruction
-from nntomo.utilities import progressbar
+from nntomo.utilities import progressbar, get_MSE_loss, astra_clear_all
 from nntomo.volume import Volume
 from nntomo import DATA_FOLDER
 
@@ -106,14 +106,15 @@ class ProjectionStack:
         tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'rad')
         proj_geom = astra.create_proj_geom('parallel3d', 1.0, 1.0, Nz, Nd, tilt_angles)
         vol_geom = astra.create_vol_geom(Ny, Nx, Nz)
-        _, proj_stack = astra.create_sino3d_gpu(volume.volume, proj_geom, vol_geom)
+        _, stack = astra.create_sino3d_gpu(volume.volume, proj_geom, vol_geom)
 
         if custom_id is None:
             id = f"{volume.id}-{angles_range}{Nth}th"
         else:
             id = custom_id
-
-        return cls(proj_stack, angles_range, id, axes_convention='astra')
+        proj_stack = cls(stack, angles_range, id, axes_convention='astra')
+        astra_clear_all()
+        return proj_stack
 
     @classmethod
     def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str, cell_repetition: tuple[int, int, int] = (1,1,1), symetry: bool = False,
@@ -171,8 +172,8 @@ class ProjectionStack:
         tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'deg')
         for angle in tilt_angles:
 
-            filename = DATA_FOLDER / f'tif_files/{tif_id}[{angle:.1f}].tif'
-            sym_filename = DATA_FOLDER / f'tif_files/{tif_id}[{-angle:.1f}].tif'
+            filename = DATA_FOLDER / f'tif_files/{tif_id}[{angle}].tif'
+            sym_filename = DATA_FOLDER / f'tif_files/{tif_id}[{-angle}].tif'
 
             if os.path.isfile(filename):
                 print(f"tif file retrieved for projection angle {angle}°")
@@ -224,7 +225,7 @@ class ProjectionStack:
 
         stack = np.stack(projs)/255
         return cls(stack, angles_range, id, axes_convention='imod')
-     
+    
     @classmethod
     def from_mrc_file(cls, projection_file: str, angles_range: str = 'tem', custom_id: str = None) -> 'ProjectionStack':
         """Creation of a projection stack object, from a .ali or .mrc file.
@@ -306,7 +307,10 @@ class ProjectionStack:
         if self.Nth*7 % 9 != 0:
             raise ValueError("The conversion cannot be made: the original stack doesn't contain projections at -70° and 70°.")
         new_Nth = self.Nth*7//9 + 1
-        new_stack = self.stack[:, (self.Nth-new_Nth)//2 + 1 : - ((self.Nth-new_Nth)//2)]
+        if (self.Nth-new_Nth)//2 == 0:
+            new_stack = self.stack[:, 1:]
+        else:
+            new_stack = self.stack[:, (self.Nth-new_Nth)//2 + 1 : - ((self.Nth-new_Nth)//2)]
         new_id = f"{self.id}-subtem{new_Nth}"
         return ProjectionStack(new_stack, 'tem', new_id)
 
@@ -348,17 +352,31 @@ class ProjectionStack:
 
 
 
-    def get_SIRT_reconstruction(self, n_iter: int) -> Volume:
-        """Computes the SIRT reconstruction, using ASTRA toolbox.
+    def get_SIRT_reconstruction(self, n_iter: int = None, ref_rec: Volume = None, segm_threshold: float = None, max_iter: int = 500,
+                                return_MSEs: bool = False, iter_step: int = 1, normalize: bool = True) -> Union[Volume, tuple[Volume, list]]:
+        """Computes the SIRT reconstruction, using ASTRA toolbox. Two modes: the SIRT reconstruction can be computed given
+        a precise number of iterations (parameter n_iter), or the reconstruction is computed with the best number of iterations,
+        given a reference reconstruction to minimize the MSE. 
 
         Args:
-            n_iter (int): Number of iterations for the SIRT algorithm.
+            n_iter (int): Number of iterations for the SIRT algorithm. Either n_iter or ref_rec has to be given as a parameter.
+            ref_rec (Volume): Reference reconstruction to compare the SIRT reconstructions with: the SIRT reconstruction with
+                the smallest MSE is returned. Either n_iter or ref_rec has to be given as a parameter.
+            max_iter (int): The maximum number of iteration (when ref_rec) is given. Default to 500.
+            segm_threshold (float): The threshold for the SIRT segmentation, float between 0 and 1. Default to None (no segmentation).
+            return_MSEs (bool): Whether or not to return the list of MSEs computed in the ref_rec mode. The list will be of
+                size max_iter. Default to False.
+            iter_step (int): In the ref_rec mode, reconstruction are computed every iter_step iterations. Default to 1.
+            normalize (bool): Whether or not to normalize the reconstruction. Default to True.
+
         
         Returns:
-            Volume: the reconstructed volume.
+            Volume: The reconstructed volume.
+            list: The list of computed MSEs if return_MSEs is True in the ref_rec mode.
         """
-
-        print("Start of SIRT reconstruction.")
+        
+        if not (n_iter is None) ^ (ref_rec is None):
+            raise ValueError("Either n_iter or ref_rec has to be given as a parameter.")
 
         proj_geom = astra.create_proj_geom('parallel3d', 1.0, 1.0, self.Nz, self.Nd, self.tilt_angles)
         proj_id = astra.data3d.create('-sino', proj_geom, self.stack)
@@ -369,20 +387,38 @@ class ProjectionStack:
         cfg = astra.astra_dict('SIRT3D_CUDA')
         cfg['ReconstructionDataId'] = recon_id
         cfg['ProjectionDataId'] = proj_id
+        cfg['option'] = {'MinConstraint': 0}
         alg_id = astra.algorithm.create(cfg)
 
+            
+        mse_list = []
+        if ref_rec is not None:
+            for i in progressbar(range(0, max_iter, iter_step), "Looking for best number of iterations: "):
+                astra.algorithm.run(alg_id, iter_step)
+                current_rec = astra.data3d.get(recon_id)
+                current_rec_volume = Volume(current_rec, f"sirt{i}_{self.id}").get_segmented_volume(segm_threshold)
+                if normalize:
+                    current_rec_volume.normalize()
+                mse_list.append(get_MSE_loss(ref_rec, current_rec_volume))
+            n_iter = 1 + np.argmin(mse_list)
+
+        recon_id = astra.data3d.create('-vol', vol_geom, data=0)
+        cfg['ReconstructionDataId'] = recon_id
+        alg_id = astra.algorithm.create(cfg)
         astra.algorithm.run(alg_id, n_iter)
+        reconstruction = astra.data3d.get(recon_id) 
 
-        # Get the reconstructed volume
-        reconstruction = astra.data3d.get(recon_id)
-
-        # Cleanup
-        astra.algorithm.delete(alg_id)
-        astra.data3d.delete(proj_id)
-        astra.data3d.delete(recon_id)
+        astra_clear_all()
 
         reconstruction_id = f"sirt{n_iter}_{self.id}"
-        return Volume(reconstruction, reconstruction_id)
+        volume = Volume(reconstruction, reconstruction_id).get_segmented_volume(segm_threshold)
+
+        if normalize:
+            volume.normalize()
+        if return_MSEs:
+            return volume, mse_list
+        else:
+            return volume
     
     def get_FBP_reconstruction(self) -> Volume:
         """Computes the FBP reconstruction, using ASTRA toolbox. The computation is done by doing 2D FBP for each layer of the volume to reconstruct.
@@ -390,8 +426,6 @@ class ProjectionStack:
         Returns:
             Volume: the reconstructed volume.
         """
-
-        print("Start of FBP reconstruction.")
 
         vol_geom = astra.create_vol_geom(self.Nd, self.Nd)
         proj_geom = astra.create_proj_geom('parallel', 1.0, self.Nd, self.tilt_angles)
@@ -404,7 +438,7 @@ class ProjectionStack:
 
         reconstruction = np.zeros((self.Nz, self.Nd, self.Nd), dtype=np.float32)
 
-        for layer_index in progressbar(range(self.Nz), "FBP reconstruction: "):
+        for layer_index in range(self.Nz):
 
             proj_id = astra.data2d.create('-sino', proj_geom, self.stack[layer_index])
             
@@ -417,26 +451,24 @@ class ProjectionStack:
             astra.data2d.delete(proj_id)
             astra.algorithm.delete(alg_id)
         
-        astra.data2d.delete(rec_id)
-        astra.projector.delete(proj_id)
+        astra_clear_all()
         
         reconstruction_id = f"fbp_{self.id}"
         return Volume(np.flip(reconstruction, axis=1), reconstruction_id)
 
     @torch.no_grad
-    def get_NN_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True) -> Volume:  # type: ignore # noqa: F821
+    def get_NNFBP_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True, show_progressbar: bool = True) -> Volume:  # type: ignore # noqa: F821
         """Computes the neural network reconstruction, using the NN-FBP algorithm.
 
         Args:
             nn_model (NNFPB): The trained model used for the reconstruction.
             empty_cached_memory (bool, optional): Whether or not to delete the gpu cached memory generated by cupy and torch (which cannot be used
                 by other libraries like astra).
+            show_progressbar (bool): Whether or not to show progressbar. Default to True.
 
         Returns:
             Volume: the reconstructed volume.
         """
-
-        print("Start of NN reconstruction.")
 
         if nn_model.Nth != self.interp_Nth or nn_model.Nd != self.Nd:
             raise ValueError("The model wasn't trained for this volume shape and number of projections.")
@@ -468,7 +500,11 @@ class ProjectionStack:
 
         fbps = np.zeros((self.Nd, self.Nd, self.Nz, Nh), dtype = np.float32)
 
-        for h in progressbar(range(Nh), "Reconstruction part 1/2: "):
+        if show_progressbar:
+            iterable = progressbar(range(Nh), "Reconstruction part 1/2: ")
+        else:
+            iterable = range(Nh)
+        for h in iterable:
             fbp_h = cp.zeros((self.Nd, self.Nd, self.Nz), dtype = cp.float32)
             for i, theta in enumerate(self.interp_tilt_angles):
                 proj_fft = cp.fft.rfft(proj_stack[i], fft_out_size, axis=1)
@@ -485,7 +521,9 @@ class ProjectionStack:
         reconstruction = np.zeros((self.Nd, self.Nd, self.Nz), dtype = np.float32)
         
         nn_model.to('cuda:0')
-        for h in progressbar(range(Nh), "Reconstruction part 2/2: "):
+        if show_progressbar:
+            iterable = progressbar(range(Nh), "Reconstruction part 2/2: ")
+        for h in iterable:
             input_nn = torch.from_numpy(fbps[:,:,h*self.Nz//Nh:(h+1)*self.Nz//Nh,:]).to('cuda:0')
             reconstruction[:,:,h*self.Nz//Nh:(h+1)*self.Nz//Nh] = nn_model.end_forward(input_nn).cpu().numpy()
         nn_model.to('cpu')
@@ -498,7 +536,48 @@ class ProjectionStack:
         
         reconstruction = np.rot90(np.rot90(reconstruction, axes=(2,0)), axes=(1,2))
 
-        reconstruction_id = f"nn_{nn_model.id}_{self.id}"
+        reconstruction_id = f"nnfbp_{nn_model.id}_{self.id}"
+        return Volume(reconstruction, reconstruction_id)
+
+    @torch.no_grad
+    def get_MSDNET_reconstruction(self, nn_model: 'MSDNET', empty_cached_memory: bool = True, show_progressbar: bool = True) -> Volume: # type: ignore # noqa: F821
+        """Computes the MSDNET reconstruction.
+
+        Args:
+            nn_model (MSDNET): The trained model used for the reconstruction.
+            empty_cached_memory (bool, optional): Whether or not to delete the gpu cached memory generated by cupy and torch (which cannot be used
+                by other libraries like astra).
+            show_progressbar (bool): Whether or not to show progressbar. Default to True.
+
+        Returns:
+            Volume: the reconstructed volume.
+        """
+
+        if nn_model.Nth != self.Nth or nn_model.Nd != self.Nd or nn_model.angles_range != self.angles_range:
+            raise ValueError("The model wasn't trained for this volume shape, number of projections and range of projection angles.")
+        
+        nn_model.eval()
+        nn_model.to('cuda:0')
+
+        fbp_volume = self.get_FBP_reconstruction().volume
+        reconstruction = np.zeros_like(fbp_volume)
+
+        if show_progressbar:
+            iterable = progressbar(range(len(fbp_volume)), "MSDNET forward: ")
+        else:
+            iterable = range(len(fbp_volume))
+        for slice in iterable:
+            gpu_slice = torch.from_numpy(fbp_volume[slice]).view(1,fbp_volume.shape[1], fbp_volume.shape[2]).to('cuda:0')
+            reconstruction[slice] = nn_model.forward(gpu_slice).cpu().numpy()
+        
+        nn_model.to('cpu')
+
+        reconstruction_id = f"msdnet_{self.id}"
+
+        if empty_cached_memory:
+            del(gpu_slice)
+            torch.cuda.empty_cache()
+
         return Volume(reconstruction, reconstruction_id)
 
 

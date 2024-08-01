@@ -1,6 +1,6 @@
 [THE PACKAGE IS CURRENTLY A WORK IN PROGRESS]
 
-An implementation of the NN-FBP algorithm from [1]_ using the pytorch library, as well as some other utility functions, in the context of applying the algorithm to STEM measurements on COFs and MOFs. Right now, it can only run on a NVIDIA GPU with at least 24 GB of memory.
+An implementation of the NN-FBP algorithm from [1]_, and the MSD network from [2]_, [3]_ using the pytorch library, as well as some other utility functions, in the context of applying the algorithm to STEM measurements on COFs and MOFs. Right now, it can only run on a NVIDIA GPU with at least 24 GB of memory.
 
 To install, run ``pip install .`` in the root folder.
 
@@ -13,12 +13,13 @@ The documentation is currently available in ``CentralData/Temp/Alix/documentatio
 
 **Code structure**
 
-The code is currently structured into 6 files:
+The code is currently structured into 7 files:
 
 - ``volume.py`` contains the class Volume, to represent 3d objects (wrapper of a 3d numpy array),
 - ``projection_stack.py`` contains the class ProjectionStack, to represent stacks of projections from tomography in various formats; reconstruction methods are here,
-- ``network.py`` contains the pytorch Neural Network class, as well as the training functions,
-- ``dataset_slices.py`` contains the pytorch Dataset class,
+- ``network.py`` contains the training functions for the two neural networks,
+- ``nnfbp.py`` contains the pytorch Dataset and Network classes for the NN-FBP algorithm,
+- ``msdnet.py`` contains the pytorch Dataset and Network classes for the MSDNET algorithm,
 - ``custom_interp.py`` contains custom interpolation functions running on GPU for fast dataset computation and fast reconstruction,
 - ``utilities.py`` contains utility functions.
 
@@ -32,3 +33,5 @@ An example of tomographic reconstruction using this package is available in ``sc
 
 
 .. [1] Pelt, D., & Batenburg, K. (2013). Fast tomographic reconstruction from limited data using artificial neural networks. Image Processing, IEEE Transactions on, 22(12), pp.5238-5251.
+.. [2] Pelt, D. M., & Sethian, J. A. (2018). A mixed-scale dense convolutional neural network for image analysis. Proceedings of the National Academy of Sciences, 115(2), 254-259.
+.. [3] Pelt, D. M., Batenburg, K. J., & Sethian, J. A. (2018). Improving Tomographic Reconstruction from Limited Data Using Mixed-Scale Dense Convolutional Neural Networks. Journal of Imaging, 4(11), 128.

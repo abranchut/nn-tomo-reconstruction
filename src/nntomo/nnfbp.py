@@ -49,7 +49,8 @@ class NNFBP(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear_sigm_stack(self.W(x))
+        x = self.linear_sigm_stack(self.W(x))
+        return x.view(x.size(0))
     
     def end_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward method for the end part of the network, used in the NN reconstruction phase, where the input computations and the first forward

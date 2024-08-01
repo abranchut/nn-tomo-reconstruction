@@ -1,3 +1,4 @@
+import pickle
 from typing import Union
 
 import numpy as np
@@ -10,10 +11,23 @@ from nntomo.volume import Volume
 from nntomo import DATA_FOLDER
 
 class MSDNET(nn.Module):
-    """width=1"""
-    
-    def __init__(self, depth: int = 100, max_dilation: int = 10) -> None:
+    """Implementation of the Mixed-Scale Dense Convolutional Neural Network used in [Improving Tomographic Reconstruction from Limited Data Using
+    Mixed-Scale Dense Convolutional Neural Networks, Pelt and al., 2018] for tomographic reconstruction. The width of the network as defined in
+    [A mixed-scale dense convolutional neural network for image analysis, Pelt and al., 2018] is always 1 in this implementation. See this article
+    for the definition of depth and maximum dilation.
+
+    Args:
+        train_dataset (DatasetMSDNET): The dataset used for training.
+        depth (int, optional): The depth of the network. Defaults to 100.
+        max_dilation (int, optional): The maximum dilation. Defaults to 10.
+    """
+
+    def __init__(self, train_dataset: 'DatasetMSDNET', depth: int = 100, max_dilation: int = 10) -> None:
         super().__init__()
+        
+        self.Nth = train_dataset.Nth
+        self.Nd = train_dataset.Nd
+        self.angles_range = train_dataset.angles_range
 
         self.depth = depth
 
@@ -35,20 +49,23 @@ class MSDNET(nn.Module):
                 padding='same')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        relu = nn.ReLU()
+        sigm = nn.Sigmoid()
+        previous_features = [x.view(x.size(0), 1, x.size(1), x.size(2))]
 
-        previous_features = [x]
         for conv, batch_norm in zip(self.conv_list, self.bach_norm_list):
-            x = torch.stack(previous_features)
-            x = nn.ReLU(batch_norm(conv(x)))
+            x = torch.cat(previous_features, dim=1)
+            x = relu(batch_norm(conv(x)))
             previous_features.append(x)
         
-        x = torch.stack(previous_features)
-        return nn.Sigmoid(self.last_conv(x))
+        x = torch.cat(previous_features, dim=1)
+        return sigm(self.last_conv(x)).view(x.size(0), x.size(2), x.size(3))
 
 
 
 class DatasetMSDNET(Dataset):
-    """_description_
+    """The pytorch Dataset class for MSDNET in tomographic reconstuction. A FBP reconstruction is computed with the given stack of projections; slices
+    of this reconstruction are given as inputs for the network, while stacks of given reference volumes are given as outputs.
 
     Args:
             proj_stacks (Union[ProjectionStack, list[ProjectionStack]]): The stack(s) of projections used to calculate he inputs.
@@ -81,6 +98,9 @@ class DatasetMSDNET(Dataset):
             self.id = custom_id
         self.file_path = DATA_FOLDER / f"datasets_files/{self.id}.pickle"
 
+        self.Nth = proj_stacks[0].Nth
+        self.Nd = proj_stacks[0].Nd
+        self.angles_range = proj_stacks[0].angles_range
 
         fbp_volume = np.concatenate([stack.get_FBP_reconstruction().volume for stack in proj_stacks], axis=0).astype(np.float32)
         volume = np.concatenate([vol.volume for vol in volumes], axis=0).astype(np.float32)
@@ -90,11 +110,28 @@ class DatasetMSDNET(Dataset):
                 
         self.inputs = torch.from_numpy(fbp_volume)
         self.outputs = torch.from_numpy(volume)
+
+    def save(self) -> None:
+        """Saving of the dataset in the folder dataset_files."""
+        print("Saving dataset...\r")
+        with open(self.file_path, 'wb') as f:
+            pickle.dump(self, f)
+        print(f"File saved at {self.file_path}.\n ID: {self.id}")
     
-    def to(self, device: str) -> None:
-        """Transfers inputs and ouputs to the specified device."""
-        self.inputs = self.inputs.to(device)
-        self.outputs = self.outputs.to(device)
+    @classmethod
+    def retrieve(clas, id: str) -> 'DatasetMSDNET':
+        """Retrieves the dataset in the folder dataset_files, given an provided id.
+
+        Args:
+            id (str): The id of the dataset to retreive.
+
+        Returns:
+            DatasetSlices: The retrieved dataset.
+        """
+        file_path = DATA_FOLDER / f"datasets_files/{id}.pickle"
+        with open(file_path, 'rb') as f:
+            dataset = pickle.load(f)
+        return dataset
 
     
     def __len__(self) -> None:
