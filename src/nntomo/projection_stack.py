@@ -1,6 +1,10 @@
 import os
-from typing import Union
+import warnings
+from typing import Union, Optional
 
+import abtem.core
+import abtem.core.energy
+import dask.array
 import numpy as np
 import cupy as cp
 import abtem
@@ -11,10 +15,11 @@ import mrcfile
 import PIL
 import PIL.Image
 import torch
-from tifffile import imread, imwrite
+import py4DSTEM
+from dask.diagnostics import ProgressBar
 
 from nntomo.custom_interp import custom_interp_reconstruction
-from nntomo.utilities import progressbar, get_MSE_loss, astra_clear_all
+from nntomo.utilities import progressbar, empty_cached_gpu_memory
 from nntomo.volume import Volume
 from nntomo import DATA_FOLDER
 
@@ -73,11 +78,11 @@ class ProjectionStack:
                         interp_stack[n_angles_left:] = og_stack
                 else:
                     interp_stack[n_angles_left:-n_angles_right] = og_stack
-                interpolation = np.linspace(np.flipud(og_stack[-1]), og_stack[0], self.interp_Nth - self.Nth + 2, endpoint=True)
+                interpolation = np.linspace(np.flipud(og_stack[-1]), og_stack[0], self.interp_Nth - self.Nth + 2, endpoint=True)####
 
-                if n_angles_right > 0:
-                    interp_stack[-n_angles_right:] = np.flip(interpolation[1:n_angles_left], axis=1)
-                interp_stack[:n_angles_left] = interpolation[n_angles_left:-1]
+                if n_angles_right > 0:####
+                    interp_stack[-n_angles_right:] = np.flip(interpolation[1:n_angles_left], axis=1)####
+                interp_stack[:n_angles_left] = interpolation[n_angles_left:-1]####
 
                 self.interp_stack = np.transpose(interp_stack, (1,0,2))
 
@@ -85,7 +90,8 @@ class ProjectionStack:
                 raise ValueError(f"tem reconstruction for {self.Nth} projections not yet implemented.")
 
     @classmethod
-    def from_volume(cls, volume: Volume, Nth: int, angles_range: str, custom_id: str = None) -> 'ProjectionStack':
+    @empty_cached_gpu_memory
+    def from_volume(cls, volume: Volume, Nth: int, angles_range: str, custom_id: Optional[str] = None) -> 'ProjectionStack':
         """Creation of a projection stack, provided a volume object. The computation of the projections is done with ASTRA.
 
         Args:
@@ -93,7 +99,7 @@ class ProjectionStack:
             Nth (int): The number of projections to compute.
             angles_range (str): The range of projection angles in proj_files stacks, either 'full' (-90° to 90° projections) or 'tem'
                 (-70° to 70° projections).
-            custom_id (str, optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
+            custom_id (Optional[str], optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
                 identifiant is given.
 
         Returns:
@@ -113,78 +119,69 @@ class ProjectionStack:
         else:
             id = custom_id
         proj_stack = cls(stack, angles_range, id, axes_convention='astra')
-        astra_clear_all()
         return proj_stack
 
     @classmethod
-    def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str, cell_repetition: tuple[int, int, int] = (1,1,1), symetry: bool = False,
-                      nb_frozen_phonons: int = None, dose_per_area_noise: float = None, energy: float = 300e3, sampling: float = .04,
-                      del_hydrogen: bool = False, custom_id: str = None)-> 'ProjectionStack':
+    @empty_cached_gpu_memory
+    def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str, cell_repetition: tuple[int, int, int] = (1,1,1), mode: str = 'haadf',
+                      nb_frozen_phonons: int = None, dose_per_area_noise: Optional[float] = None, gaussian_filter: Optional[float] = None, energy: float = 300e3,
+                      prism_interpolator: tuple[int, int] = (16,16), custom_id: Optional[str] = None, allow_file_retrieval: bool = True)-> 'ProjectionStack':
         """Computes a projection stack object from an atomic structure in a provided .cif file. Projections are computed with the abTEM library,
-        to simulate a real STEM experiment.
+        to simulate a real STEM experiment. Two modes are available: HAADF and iDPC.
 
         Args:
             cif_file (str): The atomic structure from which the projections are taken.
             Nth (int): The number of projections to compute.
             angles_range (str): The range of projection angles in proj_files stacks, either 'full' (-90° to 90° projections) or 'tem'
                 (-70° to 70° projections).
-            cell_repetition (tuple[int, int, int], optional): How much the cell from the .cif file should be repeted in each direction. Defaults to (1,1,1).
-            symetry (bool, optional): If True, projections for positive angles are considered symetrical from projections for negative angles and as such,
-                not computed. For saving computation time. Defaults to False.
-            nb_frozen_phonons (int, optional): The number of frozen phonons. If None, the frozen phonons model is not applied. Defaults to None.
-            dose_per_area_noise (float, optional): The dose_per_area for Poisson noise. If None, no noise is added. Defaults to None.
+            cell_repetition (tuple[int, int, int], optional): By how much the cell from the .cif file should be duplicated in each direction. Defaults to (1,1,1).
+            mode (str, optional): The mode to compute the projections, either 'haadf' or 'idpc'. Defaults to 'haadf'.
+            nb_frozen_phonons (int, optional): The number of frozen phonons. If None, the frozen phonons model is not applied.
+            dose_per_area_noise (Optional[float], optional): The dose_per_area for Poisson noise. If None, no noise is added.
+            gaussian_filter (Optional[float], optional): The standard deviation for Gaussian blur. If None, the filter is not applied.
             energy (float, optional): The energy of the electrons (in eV). Defaults to 300e3.
-            sampling (float, optional): The sampling of the potentials. If too big, the maximum deviation angle will be too small for the HAADF detector.
-                Defaults to .04.
-            del_hydrogen (bool, optional): Whether or not to suppress the hydrogen from the atomic structure for faster computations. Defaults to False.
-            custom_id (str, optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
+            prism_interpolator (tuple[int, int], optional): The interpolation factors for the PRISM algorithm. Defaults to (16,16).
+                See https://abtem.readthedocs.io/en/latest/user_guide/tutorials/prism.html for more informations.
+            custom_id (Optional[str], optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
                 identifiant is given.
+            allow_file_retrieval (bool, optionnal): Whether or not to allow the retrieval of the projections from a previously saved file with the same
+                id. Default to True.
 
         Returns:
             ProjectionStack: The projection stack object.
         """
-        abtem.config.set({"device": "gpu"})
-        abtem.config.set({"dask.chunk-size-gpu": "2048 MB"})
-        dask.config.set({"num_workers": 1})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
 
-        if custom_id is None:
-            tif_id = cif_file[:-4].split('/')[-1] + f"-{cell_repetition[0]}{cell_repetition[1]}{cell_repetition[2]}"
-            id = tif_id + f"-{Nth}proj"
-        else:
-            id = custom_id
-            tif_id = custom_id
-
-        atoms = ase.io.read(cif_file)
-
-        if del_hydrogen:
-            i = 0
-            while i < len(atoms.get_atomic_numbers()):
-                if atoms.get_atomic_numbers()[i] == 1:
-                    atoms.pop(i)
-                else:
-                    i += 1
-
-        probe = abtem.Probe(energy=energy, semiangle_cutoff=22)
-        detector = abtem.AnnularDetector(inner=50, outer=200)
-        
-        projs = []
-        
-        tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'deg')
-        for angle in tilt_angles:
-
-            filename = DATA_FOLDER / f'tif_files/{tif_id}[{angle}].tif'
-            sym_filename = DATA_FOLDER / f'tif_files/{tif_id}[{-angle}].tif'
-
-            if os.path.isfile(filename):
-                print(f"tif file retrieved for projection angle {angle}°")
-                image_uint8 = imread(filename)
-            
-            elif symetry and os.path.isfile(sym_filename):
-                print(f"tif file retrieved for projection angle {angle}° (symetry from {-angle}°)")
-                image_uint8 = np.flip(imread(sym_filename), axis=0)
-
+            if custom_id is None:
+                id = cif_file[:-4].split('/')[-1] + f"-{cell_repetition[0]}{cell_repetition[1]}{cell_repetition[2]}-{mode}{Nth}proj"
             else:
-                tilted_cell = atoms.copy() * (cell_repetition[0], 1, cell_repetition[2])
+                id = custom_id
+
+            if allow_file_retrieval and os.path.isfile(DATA_FOLDER / f"projection_files/{id}.mrc"):
+                return cls.retrieve(id, angles_range)
+
+
+            abtem.config.set({"device": "gpu"})
+            abtem.config.set({"dask.chunk-size-gpu": "1024 MB"})
+            dask.config.set({"num_workers": 1})
+
+            atoms = ase.io.read(cif_file)
+
+            if mode == 'idpc':
+                detector = abtem.PixelatedDetector()
+            elif mode == 'haadf':
+                detector = abtem.AnnularDetector(inner=50, outer=200)
+            else:
+                raise ValueError(f"mode has value {mode} but must be either 'idpc' or 'haadf'.")
+
+            sampling = abtem.core.energy.energy2wavelength(energy) / 3 / 200e-3 / 1.05
+            
+            projs = []
+            tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'deg')
+            for angle in tilt_angles:
+                    
+                tilted_cell = atoms.copy() * cell_repetition
                 tilted_cell.rotate(angle, 'y', rotate_cell=False, center='COP')
 
                 if nb_frozen_phonons is not None:
@@ -192,49 +189,50 @@ class ProjectionStack:
 
                 tilted_potential = abtem.Potential(tilted_cell, sampling=sampling, projection='infinite')
 
-
-                probe.grid.match(tilted_potential)
+                s_matrix = abtem.SMatrix(potential=tilted_potential, energy=energy, semiangle_cutoff=22, interpolation=prism_interpolator)
+                nyquist_sampling = abtem.transfer.nyquist_sampling(s_matrix.semiangle_cutoff, s_matrix.energy)
 
                 grid_scan = abtem.GridScan(
                     start=(0, 0),
                     end=(1, 1),
-                    sampling=probe.aperture.nyquist_sampling,
+                    sampling=nyquist_sampling,
                     fractional=True,
                     potential=tilted_potential,
                 )
-                measurement = probe.scan(tilted_potential, scan=grid_scan, detectors=detector).compute()
-                intensity = measurement.interpolate(sampling=sampling).gaussian_filter(0.3)
-                
+                measurement = s_matrix.scan(scan=grid_scan, detectors=detector)
+
+                if mode == 'idpc':
+                    dataset = py4DSTEM.DataCube(measurement.array)
+                    dpc = py4DSTEM.process.phase.DPC(energy = energy, datacube = dataset, verbose=False)
+                    dpc.preprocess(force_com_rotation=False, plot_rotation=False, plot_center_of_mass=False)
+                    dpc.reconstruct(reset=True, progress_bar=False)
+                    measurement = abtem.measurements.Images(dpc.object_phase, nyquist_sampling)
+
+                #intensity = measurement.interpolate(sampling=sampling)
+
+                # add gaussian blur
+                if gaussian_filter is not None:
+                    measurement = measurement.gaussian_filter(gaussian_filter)
+                    
                 # add poisson noise
-                if dose_per_area_noise:
-                    intensity = intensity.poisson_noise(dose_per_area=dose_per_area_noise)
+                if dose_per_area_noise is not None:
+                    measurement = measurement.poisson_noise(dose_per_area=dose_per_area_noise)
 
-                intensity = intensity.tile((1, cell_repetition[1]))
+                projs.append(measurement.array)
+            with ProgressBar():
+                stack = dask.array.stack(projs).compute()
 
-                # Normalize and convert to uint8
-                intensity = intensity.array
-                image_normalized = (intensity - np.min(intensity)) / (np.max(intensity) - np.min(intensity)) * 255
-                image_uint8 = image_normalized.astype(np.uint8)
-
-                # Save image as TIFF
-                imwrite(filename, image_uint8, photometric='minisblack')
-
-                print(f'Saved {filename}')
-
-            projs.append(image_uint8)
-
-        stack = np.stack(projs)/255
-        return cls(stack, angles_range, id, axes_convention='imod')
+            return cls(stack, angles_range, id, axes_convention='imod')
     
     @classmethod
-    def from_mrc_file(cls, projection_file: str, angles_range: str = 'tem', custom_id: str = None) -> 'ProjectionStack':
+    def from_mrc_file(cls, projection_file: str, angles_range: str = 'tem', custom_id: Optional[str] = None) -> 'ProjectionStack':
         """Creation of a projection stack object, from a .ali or .mrc file.
 
         Args:
             projection_file (str): the .mrc file path which represents a stack of projections.
             angles_range (str): The range of projection angles in proj_files stacks, either 'full' (-90° to 90° projections) or 'tem'
                 (-70° to 70° projections).
-            custom_id (str, optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
+            custom_id (Optional[str], optional): Custom identifiant for the stack, used for the automatic generation of files names. If None, a default
                 identifiant is given.
 
         Returns:
@@ -251,25 +249,6 @@ class ProjectionStack:
         
         return cls(stack, angles_range, id, axes_convention='imod')
 
-
-
-    def get_clipped_projection_stack(self, clip_range: tuple[float, float]) -> 'ProjectionStack':
-        """Computes a projection stack in which the intensity is clipped between two values. For instance, if clip_range is set to (.7,210), all
-        voxels values under .7 will be set to .7 and all values over 210 will be set to 210.
-
-        Args:
-            clip_range (tuple[float, float]): A tuple of two floats, representing the min and the max (in this order) range for the
-                clipping procedure.
-
-        Returns:
-            ProjectionStack: The clipped projection stack.
-        """
-        min, max = clip_range
-
-        clipped_stack = np.clip(self.stack, min, max)
-        new_id = f"{self.id}-clip[{min}-{max}]"
-
-        return ProjectionStack(clipped_stack, self.angles_range, new_id)
 
     def get_proj_subset(self, nb_proj_subset: int) -> 'ProjectionStack':
         """Computes a subset of the projection stack to simulate TEM reconstruction with less projection angles. nb_proj_subset should be set so that
@@ -350,33 +329,29 @@ class ProjectionStack:
 
         return ProjectionStack(new_stack, self.angles_range, new_id, 'imod')
 
-
-
-    def get_SIRT_reconstruction(self, n_iter: int = None, ref_rec: Volume = None, segm_threshold: float = None, max_iter: int = 500,
-                                return_MSEs: bool = False, iter_step: int = 1, normalize: bool = True) -> Union[Volume, tuple[Volume, list]]:
-        """Computes the SIRT reconstruction, using ASTRA toolbox. Two modes: the SIRT reconstruction can be computed given
-        a precise number of iterations (parameter n_iter), or the reconstruction is computed with the best number of iterations,
-        given a reference reconstruction to minimize the MSE. 
+    @empty_cached_gpu_memory
+    def get_SIRT_reconstruction(self, min_eps_var: float = 0.001, n_iter: Optional[int] = None, print_n_iter: bool = False,
+                                allow_file_retrieval: bool = True) -> Union[Volume, tuple[Volume, list]]:
+        """Computes the SIRT reconstruction, using ASTRA toolbox. Two modes: the SIRT reconstruction can be computed given a precise number of
+        iterations (by providing the parameter n_iter), or the reconstruction is stopped when the variation of eps[i] = ||Ax[i]-b||, defined by
+        (eps[i-1] - eps[i])/eps[i-1] is smaller than min_eps_var; where A is the forward projection operator, x[i] is the current SIRT reconstruction,
+        and b is the provided sinogram / stack of projections. 
 
         Args:
-            n_iter (int): Number of iterations for the SIRT algorithm. Either n_iter or ref_rec has to be given as a parameter.
-            ref_rec (Volume): Reference reconstruction to compare the SIRT reconstructions with: the SIRT reconstruction with
-                the smallest MSE is returned. Either n_iter or ref_rec has to be given as a parameter.
-            max_iter (int): The maximum number of iteration (when ref_rec) is given. Default to 500.
-            segm_threshold (float): The threshold for the SIRT segmentation, float between 0 and 1. Default to None (no segmentation).
-            return_MSEs (bool): Whether or not to return the list of MSEs computed in the ref_rec mode. The list will be of
-                size max_iter. Default to False.
-            iter_step (int): In the ref_rec mode, reconstruction are computed every iter_step iterations. Default to 1.
-            normalize (bool): Whether or not to normalize the reconstruction. Default to True.
-
-        
+            min_eps_var (float, optionnal): If n_iter is not given, minimum value for eps[i] before stopping. Default to 0.001.
+            n_iter (Optional[int], optionnal): If given, fixed number of iterations for the SIRT algorithm.
+            print_n_iter (bool, optionnal): Whether or not to print the final number of SIRT iterations. If the volume is retrieved from a file (with
+                allow_file_retrieval set to True), nothing is printed either way. Default to False.
+            allow_file_retrieval (bool, optionnal): Whether or not to allow the retrieval of the reconstruction from a previously saved file with the same
+                id. Default to True.
+            
         Returns:
             Volume: The reconstructed volume.
-            list: The list of computed MSEs if return_MSEs is True in the ref_rec mode.
         """
-        
-        if not (n_iter is None) ^ (ref_rec is None):
-            raise ValueError("Either n_iter or ref_rec has to be given as a parameter.")
+
+        reconstruction_id = f"sirt_{self.id}"
+        if allow_file_retrieval and os.path.isfile(DATA_FOLDER / f"volume_files/{reconstruction_id}.mrc"):
+                return Volume.retrieve(reconstruction_id)
 
         proj_geom = astra.create_proj_geom('parallel3d', 1.0, 1.0, self.Nz, self.Nd, self.tilt_angles)
         proj_id = astra.data3d.create('-sino', proj_geom, self.stack)
@@ -390,43 +365,44 @@ class ProjectionStack:
         cfg['option'] = {'MinConstraint': 0}
         alg_id = astra.algorithm.create(cfg)
 
-            
-        mse_list = []
-        if ref_rec is not None:
-            for i in progressbar(range(0, max_iter, iter_step), "Looking for best number of iterations: "):
-                astra.algorithm.run(alg_id, iter_step)
+        if n_iter is None:
+            current_epsilon = None
+            last_epsilon = None
+            cp_stack = cp.asarray(self.stack)
+            n_iter = 0
+            while last_epsilon is None or (last_epsilon - current_epsilon)/last_epsilon > min_eps_var:
+                last_epsilon = current_epsilon
+                astra.algorithm.run(alg_id, 1)
+                n_iter += 1
                 current_rec = astra.data3d.get(recon_id)
-                current_rec_volume = Volume(current_rec, f"sirt{i}_{self.id}").get_segmented_volume(segm_threshold)
-                if normalize:
-                    current_rec_volume.normalize()
-                mse_list.append(get_MSE_loss(ref_rec, current_rec_volume))
-            n_iter = 1 + np.argmin(mse_list)
+                _, forward_proj = astra.create_sino3d_gpu(current_rec, proj_geom, vol_geom)
+                cp_forward_proj = cp.asarray(forward_proj)
+                current_epsilon = float(cp.sum(cp.square(cp_forward_proj - cp_stack)))
+            reconstruction = current_rec
 
-        recon_id = astra.data3d.create('-vol', vol_geom, data=0)
-        cfg['ReconstructionDataId'] = recon_id
-        alg_id = astra.algorithm.create(cfg)
-        astra.algorithm.run(alg_id, n_iter)
-        reconstruction = astra.data3d.get(recon_id) 
-
-        astra_clear_all()
-
-        reconstruction_id = f"sirt{n_iter}_{self.id}"
-        volume = Volume(reconstruction, reconstruction_id).get_segmented_volume(segm_threshold)
-
-        if normalize:
-            volume.normalize()
-        if return_MSEs:
-            return volume, mse_list
         else:
-            return volume
+            astra.algorithm.run(alg_id, n_iter)
+            reconstruction = astra.data3d.get(recon_id) 
+
+        if print_n_iter:
+            print(f"SIRT reconstruction computed with {n_iter} iterations.")
+        return Volume(reconstruction, reconstruction_id)
     
-    def get_FBP_reconstruction(self) -> Volume:
+    @empty_cached_gpu_memory
+    def get_FBP_reconstruction(self, allow_file_retrieval: bool = True) -> Volume:
         """Computes the FBP reconstruction, using ASTRA toolbox. The computation is done by doing 2D FBP for each layer of the volume to reconstruct.
+        
+        Args:
+            allow_file_retrieval (bool, optionnal): Whether or not to allow the retrieval of the reconstruction from a previously saved file with the same
+                id. Default to True.
         
         Returns:
             Volume: the reconstructed volume.
         """
-
+        reconstruction_id = f"fbp_{self.id}"
+        if allow_file_retrieval and os.path.isfile(DATA_FOLDER / f"volume_files/{reconstruction_id}.mrc"):
+                return Volume.retrieve(reconstruction_id)
+        
         vol_geom = astra.create_vol_geom(self.Nd, self.Nd)
         proj_geom = astra.create_proj_geom('parallel', 1.0, self.Nd, self.tilt_angles)
         proj_id = astra.create_projector('cuda', proj_geom, vol_geom)
@@ -451,24 +427,27 @@ class ProjectionStack:
             astra.data2d.delete(proj_id)
             astra.algorithm.delete(alg_id)
         
-        astra_clear_all()
-        
-        reconstruction_id = f"fbp_{self.id}"
         return Volume(np.flip(reconstruction, axis=1), reconstruction_id)
-
+    
     @torch.no_grad
-    def get_NNFBP_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True, show_progressbar: bool = True) -> Volume:  # type: ignore # noqa: F821
+    def get_NNFBP_reconstruction(self, nn_model: 'NNFBP', empty_cached_memory: bool = True, show_progressbar: bool = True, # type: ignore  # noqa: F821
+                                 allow_file_retrieval: bool = True) -> Volume:
         """Computes the neural network reconstruction, using the NN-FBP algorithm.
 
         Args:
             nn_model (NNFPB): The trained model used for the reconstruction.
             empty_cached_memory (bool, optional): Whether or not to delete the gpu cached memory generated by cupy and torch (which cannot be used
                 by other libraries like astra).
-            show_progressbar (bool): Whether or not to show progressbar. Default to True.
+            show_progressbar (bool, optionnal): Whether or not to show progressbar. Default to True.
+            allow_file_retrieval (bool, optionnal): Whether or not to allow the retrieval of the reconstruction from a previously saved file with the same
+                id. Default to True.
 
         Returns:
             Volume: the reconstructed volume.
         """
+        reconstruction_id = f"{nn_model.id}_{self.id}"
+        if allow_file_retrieval and os.path.isfile(DATA_FOLDER / f"volume_files/{reconstruction_id}.mrc"):
+                return Volume.retrieve(reconstruction_id)
 
         if nn_model.Nth != self.interp_Nth or nn_model.Nd != self.Nd:
             raise ValueError("The model wasn't trained for this volume shape and number of projections.")
@@ -536,22 +515,29 @@ class ProjectionStack:
         
         reconstruction = np.rot90(np.rot90(reconstruction, axes=(2,0)), axes=(1,2))
 
-        reconstruction_id = f"nnfbp_{nn_model.id}_{self.id}"
-        return Volume(reconstruction, reconstruction_id)
+        reconstruction = (reconstruction - nn_model.b)/nn_model.a
 
+        return Volume(reconstruction, reconstruction_id)
+    
     @torch.no_grad
-    def get_MSDNET_reconstruction(self, nn_model: 'MSDNET', empty_cached_memory: bool = True, show_progressbar: bool = True) -> Volume: # type: ignore # noqa: F821
+    def get_MSDNET_reconstruction(self, nn_model: 'MSDNET', empty_cached_memory: bool = True, show_progressbar: bool = True, # type: ignore # noqa: F821
+                                  allow_file_retrieval: bool = True) -> Volume:
         """Computes the MSDNET reconstruction.
 
         Args:
             nn_model (MSDNET): The trained model used for the reconstruction.
             empty_cached_memory (bool, optional): Whether or not to delete the gpu cached memory generated by cupy and torch (which cannot be used
                 by other libraries like astra).
-            show_progressbar (bool): Whether or not to show progressbar. Default to True.
+            show_progressbar (bool, optionnal): Whether or not to show progressbar. Default to True.
+            allow_file_retrieval (bool, optionnal): Whether or not to allow the retrieval of the reconstruction from a previously saved file with the same
+                id. Default to True.
 
         Returns:
             Volume: the reconstructed volume.
         """
+        reconstruction_id = f"{nn_model.id}_{self.id}"
+        if allow_file_retrieval and os.path.isfile(DATA_FOLDER / f"volume_files/{reconstruction_id}.mrc"):
+                return Volume.retrieve(reconstruction_id)
 
         if nn_model.Nth != self.Nth or nn_model.Nd != self.Nd or nn_model.angles_range != self.angles_range:
             raise ValueError("The model wasn't trained for this volume shape, number of projections and range of projection angles.")
@@ -572,8 +558,6 @@ class ProjectionStack:
         
         nn_model.to('cpu')
 
-        reconstruction_id = f"msdnet_{self.id}"
-
         if empty_cached_memory:
             del(gpu_slice)
             torch.cuda.empty_cache()
@@ -589,7 +573,7 @@ class ProjectionStack:
     def _get_imod_stack(self) -> np.ndarray:
         """Returns the numpy array stack in the IMOD axes convention."""
         return np.transpose(self.stack, (1,2,0))
-    
+
     @staticmethod
     def _get_tilt_serie(Nth: int, angles_range: str, unit: str) -> np.ndarray:
         """Computes a tilt serie, provided a number of projections, an angle range and a unit.
@@ -616,8 +600,8 @@ class ProjectionStack:
             raise ValueError(f"unit must be in ('rad', 'deg') but has value '{unit}'")
         
         return tilt_angles
-        
-    
+
+
     def save(self) -> None:
         """Saving of the projection stack in the folder projection_files, in the IMOD axes convention."""
 
@@ -625,7 +609,7 @@ class ProjectionStack:
         with mrcfile.new(self.file_path, overwrite=True) as mrc:
             mrc.set_data(self._get_imod_stack())
         print(f"File saved at {self.file_path}.\n ID: {self.id}")
-    
+
     @classmethod
     def retrieve(clas, id: str, angles_range: str) -> 'ProjectionStack':
         """Retrieves the projection stack in the folder projection_files, given an provided id.

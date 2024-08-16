@@ -1,5 +1,5 @@
 import pickle
-from typing import Union
+from typing import Union, Optional
 
 import numpy as np
 import torch
@@ -70,11 +70,11 @@ class DatasetMSDNET(Dataset):
     Args:
             proj_stacks (Union[ProjectionStack, list[ProjectionStack]]): The stack(s) of projections used to calculate he inputs.
             volumes (Union[Volume, list[Volume]]): The volume(s) representing the real voxel values (expected outputs) associated with proj_stacks.
-            custom_id (str, optional): Identifiant for the dataset, used for the automatic generation of files names. If None, a default identifiant
+            custom_id (Optional[str], optional): Identifiant for the dataset, used for the automatic generation of files names. If None, a default identifiant
                 is given.
     """
 
-    def __init__(self, proj_stacks: Union[ProjectionStack, list[ProjectionStack]], volumes: Union[Volume, list[Volume]], custom_id: str = None) -> None:
+    def __init__(self, proj_stacks: Union[ProjectionStack, list[ProjectionStack]], volumes: Union[Volume, list[Volume]], custom_id: Optional[str] = None) -> None:
         ### Checking that proj_stacks and volumes are compatible ###
         if type(proj_stacks) is not list:
             proj_stacks = [proj_stacks]
@@ -93,7 +93,7 @@ class DatasetMSDNET(Dataset):
         
         ### Id and file_path in case we want to save the dataset ###
         if custom_id is None:
-            self.id = f"msdn_{proj_stacks[0].id}_{volumes[0].id}"
+            self.id = f"msdn[{proj_stacks[0].id}][{volumes[0].id}]"
         else:
             self.id = custom_id
         self.file_path = DATA_FOLDER / f"datasets_files/{self.id}.pickle"
@@ -105,9 +105,9 @@ class DatasetMSDNET(Dataset):
         fbp_volume = np.concatenate([stack.get_FBP_reconstruction().volume for stack in proj_stacks], axis=0).astype(np.float32)
         volume = np.concatenate([vol.volume for vol in volumes], axis=0).astype(np.float32)
 
-        fbp_volume = (fbp_volume-fbp_volume.min()) / (fbp_volume.max()-fbp_volume.min())
-        volume = (volume-volume.min()) / (volume.max()-volume.min())
-                
+        fbp_volume = (fbp_volume-fbp_volume.min()) / (fbp_volume.max()-fbp_volume.min())####
+        volume = (volume-volume.min()) / (volume.max()-volume.min())####
+
         self.inputs = torch.from_numpy(fbp_volume)
         self.outputs = torch.from_numpy(volume)
 

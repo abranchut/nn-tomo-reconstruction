@@ -9,7 +9,6 @@ DATA_FOLDER = Path.cwd() / 'data'
 mandatory_folders = [
     'volume_files',
     'projection_files',
-    'tif_files',
     'nn_models',
     'datasets_files'
 ]
