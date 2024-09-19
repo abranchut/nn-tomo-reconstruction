@@ -24,18 +24,23 @@ class NNFBP(nn.Module):
         train_dataset (DatasetNNFBP): The dataset used for training.
         Nh (int): The number of hidden nodes.
         id (str): An identifiant for the network, used for the automatic generation of files names.
+        activation (str, optional): The activation function of the hidden layer, either 'relu' or 'sigmoid'. Default to relu'.
     """
 
-    def __init__(self, train_dataset: 'DatasetNNFBP', Nh: int, id: str) -> None:
+    def __init__(self, train_dataset: 'DatasetNNFBP', Nh: int, id: str, activation: str = 'relu') -> None:
         super().__init__()
+
+        if activation not in ['relu', 'sigmoid']:
+            raise ValueError(f"activation must have value 'relu' or 'sigmoid' but has value {activation}")
 
         self.Nh = Nh
         self.id = id
 
         self.raw_input_size = train_dataset.raw_input_size
-        self.inputs_per_bin = train_dataset.inputs_per_bin
-        self.bin_indexes = train_dataset.bin_indexes
         self.binning = train_dataset.binning
+        if self.binning:
+            self.inputs_per_bin = train_dataset.inputs_per_bin
+            self.bin_indexes = train_dataset.bin_indexes
         self.Nth = train_dataset.Nth
         self.Nd = train_dataset.Nd
         self.a = train_dataset.a
@@ -43,10 +48,14 @@ class NNFBP(nn.Module):
 
         self.W = nn.Linear(train_dataset.input_size, Nh)
 
+
+        if activation == 'relu':
+            act_func = nn.ReLU()
+        elif activation == 'sigmoid':
+            act_func = nn.Sigmoid()
         self.linear_sigm_stack = nn.Sequential(
             nn.BatchNorm1d(Nh),
-            nn.ReLU(),
-            #nn.Sigmoid(),
+            act_func,
             nn.Linear(Nh, 1),
             nn.Sigmoid(),
         )
@@ -77,7 +86,9 @@ class NNFBP(nn.Module):
             for i in range(self.raw_input_size):
                 unbinned_weights[:,i] = weights[:,self.bin_indexes[i]]/self.inputs_per_bin[self.bin_indexes[i]] # Divide to compensate the averaging.
         
-        return unbinned_weights
+            return unbinned_weights
+        else:
+            return weights
 
 
 
@@ -134,7 +145,6 @@ class DatasetNNFBP(Dataset):
         volume = np.concatenate([vol.volume for vol in volumes], axis=0).astype(np.float32)
         
         proj_stack = np.transpose(proj_stack, (1,0,2)) # (Nz, Nth, Nd) -> (Nth, Nz, Nd)
-        proj_stack = (proj_stack-proj_stack.min()) / (proj_stack.max()-proj_stack.min())
         proj_stack = cp.asarray(proj_stack, dtype = cp.float32)
         
         self.a = 1/(volume.max()-volume.min())

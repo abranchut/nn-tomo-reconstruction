@@ -16,7 +16,6 @@ import PIL
 import PIL.Image
 import torch
 import py4DSTEM
-from dask.diagnostics import ProgressBar
 
 from nntomo.custom_interp import custom_interp_reconstruction
 from nntomo.utilities import progressbar, empty_cached_gpu_memory
@@ -123,7 +122,7 @@ class ProjectionStack:
 
     @classmethod
     @empty_cached_gpu_memory
-    def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str, cell_repetition: tuple[int, int, int] = (1,1,1), mode: str = 'haadf',
+    def from_cif_file(cls, cif_file: str, Nth: int, angles_range: str, cell_repetition: tuple[int, int, int] = (1,1,1), mode: str = 'haadf', padding: bool = False,
                       nb_frozen_phonons: int = None, dose_per_area_noise: Optional[float] = None, gaussian_filter: Optional[float] = None, energy: float = 300e3,
                       prism_interpolator: tuple[int, int] = (16,16), custom_id: Optional[str] = None, allow_file_retrieval: bool = True)-> 'ProjectionStack':
         """Computes a projection stack object from an atomic structure in a provided .cif file. Projections are computed with the abTEM library,
@@ -136,6 +135,8 @@ class ProjectionStack:
                 (-70° to 70° projections).
             cell_repetition (tuple[int, int, int], optional): By how much the cell from the .cif file should be duplicated in each direction. Defaults to (1,1,1).
             mode (str, optional): The mode to compute the projections, either 'haadf' or 'idpc'. Defaults to 'haadf'.
+            padding (bool, optional): Wether or not to add padding on the outside of the cell. The padding width is equal to one eigth of the width of the
+                cell (after the multiplication by cell_repetition step). Default to False.
             nb_frozen_phonons (int, optional): The number of frozen phonons. If None, the frozen phonons model is not applied.
             dose_per_area_noise (Optional[float], optional): The dose_per_area for Poisson noise. If None, no noise is added.
             gaussian_filter (Optional[float], optional): The standard deviation for Gaussian blur. If None, the filter is not applied.
@@ -155,6 +156,14 @@ class ProjectionStack:
 
             if custom_id is None:
                 id = cif_file[:-4].split('/')[-1] + f"-{cell_repetition[0]}{cell_repetition[1]}{cell_repetition[2]}-{mode}{Nth}proj"
+                if padding:
+                    id += '-padd'
+                if gaussian_filter is not None:
+                    id += '-blur'
+                if dose_per_area_noise is not None:
+                    id += '-nois'
+                if nb_frozen_phonons is not None:
+                    id += '-frph'
             else:
                 id = custom_id
 
@@ -166,7 +175,11 @@ class ProjectionStack:
             abtem.config.set({"dask.chunk-size-gpu": "1024 MB"})
             dask.config.set({"num_workers": 1})
 
-            atoms = ase.io.read(cif_file)
+            atoms = ase.io.read(cif_file) * cell_repetition
+
+            if padding:
+                base_cell_size = atoms.cell.lengths()[0]
+                atoms.center(vacuum=base_cell_size/8)
 
             if mode == 'idpc':
                 detector = abtem.PixelatedDetector()
@@ -179,9 +192,9 @@ class ProjectionStack:
             
             projs = []
             tilt_angles = cls._get_tilt_serie(Nth, angles_range, 'deg')
-            for angle in tilt_angles:
-                    
-                tilted_cell = atoms.copy() * cell_repetition
+            for angle in progressbar(tilt_angles, "Computation of projections: "):
+                
+                tilted_cell = atoms.copy()# * cell_repetition
                 tilted_cell.rotate(angle, 'y', rotate_cell=False, center='COP')
 
                 if nb_frozen_phonons is not None:
@@ -199,7 +212,7 @@ class ProjectionStack:
                     fractional=True,
                     potential=tilted_potential,
                 )
-                measurement = s_matrix.scan(scan=grid_scan, detectors=detector)
+                measurement = s_matrix.scan(scan=grid_scan, detectors=detector).compute(progress_bar=False)
 
                 if mode == 'idpc':
                     dataset = py4DSTEM.DataCube(measurement.array)
@@ -219,8 +232,8 @@ class ProjectionStack:
                     measurement = measurement.poisson_noise(dose_per_area=dose_per_area_noise)
 
                 projs.append(measurement.array)
-            with ProgressBar():
-                stack = dask.array.stack(projs).compute()
+
+            stack = np.stack(projs)
 
             return cls(stack, angles_range, id, axes_convention='imod')
     
@@ -330,7 +343,7 @@ class ProjectionStack:
         return ProjectionStack(new_stack, self.angles_range, new_id, 'imod')
 
     @empty_cached_gpu_memory
-    def get_SIRT_reconstruction(self, min_eps_var: float = 0.001, n_iter: Optional[int] = None, print_n_iter: bool = False,
+    def get_SIRT_reconstruction(self, min_eps_var: float = 0.001, n_iter: Optional[int] = None, print_n_iter: bool = False, force_positive_values: bool = True,
                                 allow_file_retrieval: bool = True) -> Union[Volume, tuple[Volume, list]]:
         """Computes the SIRT reconstruction, using ASTRA toolbox. Two modes: the SIRT reconstruction can be computed given a precise number of
         iterations (by providing the parameter n_iter), or the reconstruction is stopped when the variation of eps[i] = ||Ax[i]-b||, defined by
@@ -342,6 +355,7 @@ class ProjectionStack:
             n_iter (Optional[int], optionnal): If given, fixed number of iterations for the SIRT algorithm.
             print_n_iter (bool, optionnal): Whether or not to print the final number of SIRT iterations. If the volume is retrieved from a file (with
                 allow_file_retrieval set to True), nothing is printed either way. Default to False.
+            force_positive_values (bool, optionnal): Whether or not to force SIRT to output positive values. Default to True
             allow_file_retrieval (bool, optionnal): Whether or not to allow the retrieval of the reconstruction from a previously saved file with the same
                 id. Default to True.
             
@@ -362,7 +376,8 @@ class ProjectionStack:
         cfg = astra.astra_dict('SIRT3D_CUDA')
         cfg['ReconstructionDataId'] = recon_id
         cfg['ProjectionDataId'] = proj_id
-        cfg['option'] = {'MinConstraint': 0}
+        if force_positive_values:
+            cfg['option'] = {'MinConstraint': 0}
         alg_id = astra.algorithm.create(cfg)
 
         if n_iter is None:
@@ -456,7 +471,6 @@ class ProjectionStack:
 
         ### Insure that voxels values are between 0 and 1 ###
         proj_stack = cp.asarray(np.transpose(self.interp_stack, (1,0,2)))
-        proj_stack = (proj_stack - proj_stack.min())/(proj_stack.max() - proj_stack.min())
 
         ### Voxels coordinates ###
         X = (cp.arange(self.Nd) - (self.Nd-1)/2).astype(cp.float32)

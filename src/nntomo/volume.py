@@ -1,4 +1,5 @@
 from typing import Optional
+import random
 
 import numpy as np
 import cupy as cp
@@ -51,7 +52,8 @@ class Volume:
     @classmethod
     @empty_cached_gpu_memory
     def random_spheres(cls, nb_spheres: int, shape: int = 512, radius_range: tuple[int, int] = (5, 50), padding: int = 25) -> 'Volume':
-        """Generates a volume object with random spheres in a cube.
+        """Generates a volume object with random spheres in a cube with random intensities. The voxel values of the output volume are between
+        0 and 1.
 
         Args:
             nb_spheres (int): The number of spheres.
@@ -67,19 +69,22 @@ class Volume:
         Y = cp.arange(shape, dtype=cp.float16)
         Z = cp.arange(shape, dtype=cp.float16)
         XX, YY, ZZ = cp.meshgrid(X, Y, Z)
-        volume = cp.zeros((shape,shape,shape), dtype=bool)
+        volume = cp.zeros((shape,shape,shape), dtype=cp.float16)
 
         for _ in progressbar(range(nb_spheres), "Generation of the spheres: "):
             radius = cp.random.randint(*radius_range).astype(cp.float16)
             x0, y0, z0 = cp.random.randint(padding, shape-padding, size=3).astype(cp.float16)
-            volume = cp.logical_or(volume, cp.where(cp.sqrt((XX-x0)**2 + (YY-y0)**2 + (ZZ-z0)**2, dtype =  cp.float16) <= radius, True, False))
+            intensity = random.random()
+            volume = volume + cp.where(cp.sqrt((XX-x0)**2 + (YY-y0)**2 + (ZZ-z0)**2, dtype = cp.float16) <= radius, intensity, 0)
 
-        return cls(volume.get(), f"randspheres{shape}")
+        result = cls(volume.get(), f"randspheres{shape}")
+        result.normalize()
+        return result
     
     @classmethod
     @empty_cached_gpu_memory
     def stack_7ellipses(cls, thickness: int, shape: int = 512, semi_axis_range: tuple[int, int] = (10, 100), padding: int = 50) -> 'Volume':
-        """Generates a volume object with random ellipses arranged in a stack.
+        """Generates a volume object with random ellipses arranged in a stack. The voxel values of the output volume are between 0 and 1.
 
         Args:
             thickness (int): The thickness of the stack.

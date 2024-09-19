@@ -132,7 +132,7 @@ def model_training(model: nn.Module, train_dataset: Dataset, valid_dataset: Data
     return checkpoint['best_model']
 
 def nnfbp_training(train_dataset: DatasetNNFBP, valid_dataset: DatasetNNFBP, Nh: int = 8, batch_size: int = 32, learning_rate: float = 1e-4,
-                   Nstop: int = 25, max_epoch: Optional[int] = None, custom_id: Optional[str] = None) -> NNFBP:
+                   Nstop: int = 25, max_epoch: Optional[int] = None, custom_id: Optional[str] = None, activation: str = 'relu') -> NNFBP:
     """Training procedure, with data saves every 30s. The training is done on CPU. Notably, The data saved contains an historic of the
     networks and losses during the training.
 
@@ -146,6 +146,7 @@ def nnfbp_training(train_dataset: DatasetNNFBP, valid_dataset: DatasetNNFBP, Nh:
         max_epoch (Optional[int], optional): Optionnal, a maximum number of epochs before forcing the training to stop. Defaults to None.
         custom_id (Optional[str], optional): Identifiant for the network, used for the automatic generation of files names. If None, a default identifiant
             is given.
+        activation (str, optional): The activation function of the hidden layer, either 'relu' or 'sigmoid'. Default to relu'.
 
     Returns:
         NNFBP: The best neural network.
@@ -155,7 +156,7 @@ def nnfbp_training(train_dataset: DatasetNNFBP, valid_dataset: DatasetNNFBP, Nh:
     else:
         network_id = custom_id
     
-    model = NNFBP(train_dataset, Nh, network_id)
+    model = NNFBP(train_dataset, Nh, network_id, activation)
 
     return model_training(model, train_dataset, valid_dataset, 'cpu', batch_size, learning_rate, Nstop, max_epoch, network_id)
 
