@@ -51,7 +51,7 @@ class Volume:
 
     @classmethod
     @empty_cached_gpu_memory
-    def random_spheres(cls, nb_spheres: int, shape: int = 512, radius_range: tuple[int, int] = (5, 50), padding: int = 25) -> 'Volume':
+    def random_spheres(cls, nb_spheres: int, shape: int = 512, radius_range: tuple[int, int] = (5, 50), padding: int = 25, set01: bool = False) -> 'Volume':
         """Generates a volume object with random spheres in a cube with random intensities. The voxel values of the output volume are between
         0 and 1.
 
@@ -60,6 +60,7 @@ class Volume:
             shape (int, optional): The width of the cube. Defaults to 512 voxels.
             radius_range (tuple[int, int], optional): The range of values of the randomly choosen radius. Default to (5, 100) (voxels).
             padding (int, optional): The distance limit of the randomly choosen centers from the sides of the box. Default to 50 voxels.
+            set01 (bool, optional): Whether or not to restrict all voxels values to 0 and 1. Default to False.
 
         Returns:
             Volume: The volume object.
@@ -76,6 +77,9 @@ class Volume:
             x0, y0, z0 = cp.random.randint(padding, shape-padding, size=3).astype(cp.float16)
             intensity = random.random()
             volume = volume + cp.where(cp.sqrt((XX-x0)**2 + (YY-y0)**2 + (ZZ-z0)**2, dtype = cp.float16) <= radius, intensity, 0)
+
+        if set01:
+            volume = cp.where(volume > 0, 1, 0)
 
         result = cls(volume.get(), f"randspheres{shape}")
         result.normalize()

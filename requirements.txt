@@ -3,9 +3,14 @@ cupy
 torch
 mrcfile
 abtem
-astra
+astra-toolbox
 numba
 ase
 tifffile
 notebook
+py4dstem
+pywin32
+PIL
+dask
+ase
 -e

@@ -29,7 +29,7 @@ The code is currently structured into 7 files:
 - For the basics on the use of Python classes, see ``tutorial_classes.ipynb`` in the ``scripts`` folder.
 - For an introduction on neural networks: https://www.3blue1brown.com/topics/neural-networks.
 - For explanations about the training procedure and the pytorch framework: https://pytorch.org/tutorials/beginner/basics/intro.html.
-An example of tomographic reconstruction using this package is available in ``scripts/particle_reconstruction.ipynb``.
+An example of tomographic reconstruction using this package is available in ``scripts/uio67_reconstruction.ipynb``.
 
 
 .. [1] Pelt, D., & Batenburg, K. (2013). Fast tomographic reconstruction from limited data using artificial neural networks. Image Processing, IEEE Transactions on, 22(12), pp.5238-5251.

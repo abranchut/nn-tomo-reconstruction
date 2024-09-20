@@ -91,7 +91,7 @@ def model_training(model: nn.Module, train_dataset: Dataset, valid_dataset: Data
 
     model.load_state_dict(deepcopy(checkpoint['model_states_history'][-1]))
     optimizer.load_state_dict(checkpoint['optim_state'])
-    loss_fn = nn.MSELoss(reduction='sum')
+    loss_fn = nn.MSELoss()
 
     model.to(device)
     optimizer_to(optimizer, device)
@@ -185,7 +185,7 @@ def msdnet_training(train_dataset: DatasetMSDNET, valid_dataset: DatasetMSDNET, 
     else:
         network_id = custom_id
     
-    model = MSDNET(train_dataset, depth)
+    model = MSDNET(train_dataset, network_id, depth)
 
     return model_training(model, train_dataset, valid_dataset, 'cuda:0', batch_size, learning_rate, Nstop, max_epoch, network_id)
 

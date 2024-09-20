@@ -22,12 +22,13 @@ class MSDNET(nn.Module):
         max_dilation (int, optional): The maximum dilation. Defaults to 10.
     """
 
-    def __init__(self, train_dataset: 'DatasetMSDNET', depth: int = 100, max_dilation: int = 10) -> None:
+    def __init__(self, train_dataset: 'DatasetMSDNET', id: str, depth: int = 100, max_dilation: int = 10) -> None:
         super().__init__()
         
         self.Nth = train_dataset.Nth
         self.Nd = train_dataset.Nd
         self.angles_range = train_dataset.angles_range
+        self.id = id
 
         self.depth = depth
 
