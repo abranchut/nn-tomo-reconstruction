@@ -1,5 +1,3 @@
-[THE PACKAGE IS CURRENTLY A WORK IN PROGRESS]
-
 An implementation of the NN-FBP algorithm from [1]_, and the MSD network from [2]_, [3]_ using the pytorch library, as well as some other utility functions, in the context of applying the algorithm to STEM measurements on COFs and MOFs. Right now, it can only run on a NVIDIA GPU with at least 24 GB of memory.
 
 To install, run ``pip install .`` in the root folder.
